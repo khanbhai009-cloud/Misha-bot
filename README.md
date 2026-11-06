@@ -44,15 +44,30 @@ python -m app.main     # or: uvicorn app.main:app --port 7860
 With `POLLING=1` no public URL is needed; the schema is created automatically
 on first start.
 
-## Deploy on Hugging Face Spaces
+## Deploy on Render
 
-1. Create a new Space → SDK: **Docker**.
-2. Push this folder's contents to the Space repo.
-3. Settings → **Variables and secrets**: add every env var above
-   (`WEBHOOK_BASE_URL` = the Space's public URL, no trailing slash).
-4. The Dockerfile already serves on port 7860; the bot sets its own webhook
-   on startup.
-5. Open the Space logs once — look for "webhook set" and no DB errors.
+1. Create a new **Web Service** on Render from this repo — Render detects
+   the Dockerfile automatically. Pick the **Free** instance type.
+2. In the service's **Environment** tab, set the variables from
+   `.env.example`, at minimum:
+   - `BOT_TOKEN` — from @BotFather
+   - `DATABASE_URL` — the Supabase **session-pooler** connection string
+     (Supabase → Connect → Session pooler; use the pooler string, not the
+     direct connection)
+   - `NVIDIA_API_KEY`, `OPENROUTER_API_KEY`, `GROQ_API_KEY` — the LLM
+     providers
+   - `ADMIN_ID` — the owner's Telegram user id
+   - `ADMIN_PANEL_KEY` — enables the admin panel (while empty, `/admin`
+     does not exist)
+   - `WEBHOOK_BASE_URL` — this service's own public `https://…onrender.com`
+     URL, no trailing slash
+   - `WEBHOOK_SECRET` — a random string
+   - `LLM_PROVIDER_ORDER` (optional) — provider rotation order
+3. Deploy. The Dockerfile serves on Render's `$PORT` (falling back to
+   7860); the app creates the DB schema and sets its Telegram webhook on
+   startup.
+4. Check the service logs once — look for "webhook set" and no DB errors.
+   The admin panel lives at `<service URL>/admin`.
 
 ## Teaching her (owner tools)
 
