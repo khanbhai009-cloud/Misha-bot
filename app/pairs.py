@@ -12,7 +12,13 @@ How it works (modelled on how the old retrieval bots "learned"):
 - Lookup falls back to fuzzy matching when no exact pair hits: first a
   RapidFuzz pass over the scope's stored stimuli (max of ratio and
   token_set_ratio, so spelling slips, short forms and extra words still
-  match), then the older pg_trgm similarity as a last resort.
+  match), then the older pg_trgm similarity as a last resort. Both
+  fuzzy layers pass a content-word guard before a candidate is
+  accepted (see guard_accepts): fuzzy scores light up on shared
+  filler — "...ho raha hai" — so a candidate only counts when the
+  stimulus's distinctive words actually appear in the input;
+  a rejected candidate is just a miss and the next layer / the LLM
+  takes over.
 - Auto-learned pairs pass a safety filter first (links, phone numbers
   and gaaliyan are never learned from live chat); /teach pairs and the
   seeds bypass it — the owner is trusted.
@@ -173,6 +179,95 @@ def fuzzy_best(norm: str, choices) -> tuple | None:
     return (best_choice, best_score)
 
 
+# --------------------------------------------------------- fuzzy guard ----
+# token_set_ratio (and pg_trgm) happily match on shared filler: the
+# brand-new sentence "mera phone kho gaya, bohot tension ho raha hai"
+# scored 81.5 against the seed stimulus "bore ho raha hai" purely via
+# the shared tail "ho raha hai", and the bot answered a lost-phone
+# message with the boredom pair. The guard below is the acceptance
+# test BOTH fuzzy layers must pass: the stimulus's DISTINCTIVE tokens
+# — its content words, i.e. everything that is not an ultra-common
+# Hinglish function/aux word — must actually show up in the input.
+
+_GUARD_STOPWORDS = frozenset({
+    "ho", "raha", "rahi", "rahe", "hai", "hain", "h", "hu", "hun",
+    "kya", "ka", "ki", "ke", "me", "mein", "tum", "mai", "main",
+    "aaj", "kal", "bohot", "bahut", "bhi", "toh", "aur", "ek",
+    "ye", "yeh", "wo", "woh", "na", "ne", "se", "par", "ko", "yaar",
+    "abhi", "kuch", "mera", "meri", "mere", "tera", "teri",
+    "uska", "uski", "kar",
+})
+
+
+def distinctive_tokens(norm_text: str) -> set:
+    """The content words of a normalised phrase: every token that is
+    not an ultra-common Hinglish function/aux word."""
+    return {tok for tok in norm_text.split() if tok not in _GUARD_STOPWORDS}
+
+
+def guard_accepts(input_norm: str, stimulus_norm: str) -> bool:
+    """Acceptance guard for one fuzzy candidate (pure, no DB).
+
+    Both sides are normalised here (normalize() is idempotent, and
+    stored stimuli written by older normaliser versions get judged by
+    their modern form). Rules:
+    - The stimulus HAS distinctive tokens: with 1-2 of them, ALL must
+      appear among the input's tokens; with 3 or more, at least 60%
+      must appear.
+    - The stimulus has NO distinctive tokens (a pure function-word
+      phrase like "kya kar rahi ho", where a fuzzy score is nothing
+      but filler overlap): the input must be that same phrase modulo
+      extra function words — every stimulus token present in the
+      input, and the input carrying no content words of its own.
+      Anything else is rejected; only an exact-layer hit (or the LLM)
+      may answer such phrases in their longer forms.
+    """
+    inp = normalize(input_norm)
+    stim = normalize(stimulus_norm)
+    if not inp or not stim:
+        return False
+    distinctive = distinctive_tokens(stim)
+    input_tokens = set(inp.split())
+    if not distinctive:
+        return set(stim.split()) <= input_tokens and not distinctive_tokens(inp)
+    present = distinctive & input_tokens
+    if len(distinctive) <= 2:
+        return len(present) == len(distinctive)
+    return len(present) / len(distinctive) >= 0.6
+
+
+def fuzzy_best_guarded(norm: str, choices, threshold: float = RF_THRESHOLD) -> tuple | None:
+    """Best RapidFuzz match that also passes the content-word guard.
+
+    Candidates are scored exactly like fuzzy_best(); walking them in
+    score order, the first one at or above `threshold` that passes
+    guard_accepts() wins. A candidate at/above threshold that the
+    guard rejects is logged and skipped — it never produces a reply;
+    if nothing acceptable remains, the layer is simply a miss and the
+    next layer (or the LLM) takes over. Returns (choice, score) or
+    None, like fuzzy_best().
+    """
+    if not _RF_AVAILABLE or not norm:
+        return None
+    scored = []
+    for choice in choices:
+        if not choice:
+            continue
+        score = max(
+            _rf_fuzz.ratio(norm, choice),
+            _rf_fuzz.token_set_ratio(norm, choice),
+        )
+        scored.append((choice, score))
+    scored.sort(key=lambda item: item[1], reverse=True)
+    for choice, score in scored:
+        if score < threshold:
+            break
+        if guard_accepts(norm, choice):
+            return (choice, score)
+        log.info("pair fuzzy rejected (guard): '%s' vs '%s'", norm, choice)
+    return None
+
+
 def is_unsafe_text(text: str) -> bool:
     """Public wrapper over the auto-learn safety filter (stimulus only).
     Used by the group harvester for sticker associations."""
@@ -196,9 +291,10 @@ async def _fetch_candidates(scope: str, norm: str) -> list:
 
 def _fuzzy_query() -> str:
     """pg_trgm fuzzy match: the single best stored stimulus similar
-    enough to the input (similarity above FUZZY_SIMILARITY_THRESHOLD)."""
+    enough to the input (similarity above FUZZY_SIMILARITY_THRESHOLD).
+    stimulus_norm rides along so lookup() can run the guard on it."""
     return (
-        "SELECT id, response, mood, hits, similarity(stimulus_norm, $2) AS sim "
+        "SELECT id, stimulus_norm, response, mood, hits, similarity(stimulus_norm, $2) AS sim "
         "FROM learned_pairs "
         "WHERE scope = $1 AND similarity(stimulus_norm, $2) > $3 "
         "ORDER BY sim DESC, hits DESC LIMIT 1"
@@ -211,10 +307,28 @@ async def _fetch_fuzzy(scope: str, norm: str) -> dict | None:
     return dict(row) if row else None
 
 
+async def _fetch_fuzzy_guarded(scope: str, norm: str) -> dict | None:
+    """The pg_trgm last-resort match for one scope, through the same
+    content-word guard as the RapidFuzz layer: a similar-enough row
+    whose distinctive words do not actually appear in the input is a
+    miss, not a reply."""
+    row = await _fetch_fuzzy(scope, norm)
+    if row is None:
+        return None
+    if not guard_accepts(norm, row.get("stimulus_norm") or ""):
+        log.info(
+            "pair fuzzy rejected (guard): '%s' vs '%s'",
+            norm, row.get("stimulus_norm"),
+        )
+        return None
+    return row
+
+
 async def _rf_best_stimulus(scope: str, norm: str) -> str | None:
     """RapidFuzz scan of one scope's stored stimuli: fetch the distinct
     stimulus_norm values (most-hit first, capped) and return the best
-    one scoring at or above RF_THRESHOLD, else None."""
+    one that scores at or above RF_THRESHOLD *and* passes the
+    content-word guard, else None."""
     if not _RF_AVAILABLE:
         return None
     async with db.pool().acquire() as conn:
@@ -223,8 +337,8 @@ async def _rf_best_stimulus(scope: str, norm: str) -> str | None:
             "GROUP BY stimulus_norm ORDER BY SUM(hits) DESC LIMIT $2",
             scope, RF_CANDIDATE_CAP,
         )
-    best = fuzzy_best(norm, [r["stimulus_norm"] for r in rows])
-    if best and best[1] >= RF_THRESHOLD:
+    best = fuzzy_best_guarded(norm, [r["stimulus_norm"] for r in rows])
+    if best:
         return best[0]
     return None
 
@@ -234,11 +348,14 @@ async def lookup(chat_id: int, text: str) -> dict | None:
 
     Order: exact match (chat scope, then global) -> RapidFuzz fuzzy
     over the scope's stimuli (same scope order) -> pg_trgm fuzzy as a
-    last resort. Among up to 3 stored responses for the matched
-    stimulus, pick weighted by hits (popular answers surface more),
-    and count the hit. The returned dict also carries a "via" tag
-    ("exact" | "rapidfuzz" | "pg_trgm") naming which layer matched —
-    for logging only; reply behaviour is unchanged.
+    last resort. Both fuzzy layers are gated by the content-word
+    guard (guard_accepts): a candidate whose distinctive words do not
+    appear in the input is rejected and lookup simply falls through,
+    exactly like a miss. Among up to 3 stored responses for the
+    matched stimulus, pick weighted by hits (popular answers surface
+    more), and count the hit. The returned dict also carries a "via"
+    tag ("exact" | "rapidfuzz" | "pg_trgm") naming which layer
+    matched — for logging only; reply behaviour is unchanged.
     """
     norm = normalize(text)
     if not norm:
@@ -256,9 +373,9 @@ async def lookup(chat_id: int, text: str) -> dict | None:
                 if candidates:
                     break
     if not candidates:
-        fuzzy = await _fetch_fuzzy(_chat_scope(chat_id), norm)
+        fuzzy = await _fetch_fuzzy_guarded(_chat_scope(chat_id), norm)
         if fuzzy is None:
-            fuzzy = await _fetch_fuzzy(GLOBAL_SCOPE, norm)
+            fuzzy = await _fetch_fuzzy_guarded(GLOBAL_SCOPE, norm)
         if fuzzy is None:
             return None
         candidates = [fuzzy]
