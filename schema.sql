@@ -99,3 +99,24 @@ CREATE TABLE IF NOT EXISTS learned_pairs (
 );
 CREATE INDEX IF NOT EXISTS idx_pairs_scope_stimulus ON learned_pairs (scope, stimulus_norm);
 CREATE INDEX IF NOT EXISTS idx_pairs_stimulus_trgm ON learned_pairs USING GIN (stimulus_norm gin_trgm_ops);
+
+-- Sticker associations silently harvested from group conversations
+-- (see app/harvest.py). Only Telegram file_id strings are stored —
+-- never sticker/media bytes — so a row stays valid exactly as long as
+-- the bot token does, same rule as the `stickers` pool.
+-- kind = 'text':    stimulus_key is the normalised text a sticker replied to.
+-- kind = 'sticker': stimulus_key is the file_id of the sticker replied to.
+-- scope is the chat_id as text, exactly like learned_pairs.
+CREATE TABLE IF NOT EXISTS harvested_stickers (
+    id           BIGSERIAL PRIMARY KEY,
+    scope        TEXT NOT NULL,
+    kind         TEXT NOT NULL,
+    stimulus_key TEXT NOT NULL,
+    stimulus_raw TEXT,
+    file_id      TEXT NOT NULL,
+    hits         INT NOT NULL DEFAULT 1,
+    created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (scope, kind, stimulus_key, file_id)
+);
+CREATE INDEX IF NOT EXISTS idx_harvested_scope_kind ON harvested_stickers (scope, kind);

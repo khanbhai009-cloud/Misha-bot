@@ -9,7 +9,10 @@ How it works (modelled on how the old retrieval bots "learned"):
           learned back with source='auto', so the same sawal next time
           is free. This is how the layer trains itself from live chat.
 - The owner can hand-teach exact pairs with /teach (source='teach').
-- Lookup falls back to pg_trgm fuzzy matching when no exact pair hits.
+- Lookup falls back to fuzzy matching when no exact pair hits: first a
+  RapidFuzz pass over the scope's stored stimuli (max of ratio and
+  token_set_ratio, so spelling slips, short forms and extra words still
+  match), then the older pg_trgm similarity as a last resort.
 - Auto-learned pairs pass a safety filter first (links, phone numbers
   and gaaliyan are never learned from live chat); /teach pairs and the
   seeds bypass it — the owner is trusted.
@@ -31,6 +34,14 @@ from .persona import BOT_NAME
 
 log = logging.getLogger("bot.pairs")
 
+try:
+    from rapidfuzz import fuzz as _rf_fuzz
+    _RF_AVAILABLE = True
+except Exception:  # pragma: no cover - requirements pin rapidfuzz; safety net
+    _rf_fuzz = None
+    _RF_AVAILABLE = False
+    log.warning("rapidfuzz not importable — pairs lookup uses pg_trgm only")
+
 GLOBAL_SCOPE = "global"
 
 _MENTION_RE = re.compile(r"@\w+")
@@ -42,6 +53,14 @@ try:
     FUZZY_SIMILARITY_THRESHOLD = float(os.getenv("PAIRS_FUZZY_THRESHOLD", "0.45") or 0.45)
 except ValueError:
     FUZZY_SIMILARITY_THRESHOLD = 0.45
+
+# RapidFuzz hit threshold (score 0..100) and the per-scope candidate cap
+# for the in-process scan. Env-tunable.
+try:
+    RF_THRESHOLD = float(os.getenv("PAIRS_RF_THRESHOLD", "78") or 78)
+except ValueError:
+    RF_THRESHOLD = 78.0
+RF_CANDIDATE_CAP = 5000
 
 # ---------------------------------------------------------- safety filter ----
 # Auto-learning drinks from live group chat, which is full of promo spam,
@@ -79,16 +98,85 @@ def _pair_is_unsafe(stimulus_text: str, response_text: str) -> bool:
     return False
 
 
+_REPEAT_RE = re.compile(r"(.)\1{2,}")
+
+# Conservative Hinglish short-form map, applied to standalone tokens
+# only. Keep entries unambiguous: a token here must (almost) always mean
+# the long form in group-chat Hinglish.
+_SHORT_FORMS = {
+    "tm": "tum",
+    "kyu": "kyun", "kyo": "kyun",
+    "nhi": "nahi",
+    "bht": "bahut",
+    "acha": "accha", "achha": "accha",
+    "thik": "theek",
+    "kr": "kar",
+    "rhi": "rahi", "rha": "raha", "rhe": "rahe",
+    "mjhe": "mujhe", "tjhe": "tujhe",
+    "yr": "yaar",
+    "plz": "please", "pls": "please",
+    "kb": "kab", "jb": "jab", "tb": "tab",
+    "krna": "karna",
+    "kse": "kaise", "kesa": "kaisa", "kesi": "kaisi",
+    "smjh": "samajh",
+    "mt": "mat",
+}
+
+
 def normalize(text: str) -> str:
-    """Simple, forgiving normalisation — deliberately not clever.
+    """Forgiving normalisation for pair matching.
 
     'Hii!! @Misha kya haal hai??' -> 'hii kya haal hai'
+    'tm kya kr rhi ho'            -> 'tum kya kar rahi ho'
+
+    Steps: lowercase, drop mentions and punctuation, collapse 3+
+    repeated letters to 2 ('hiiii' -> 'hii'), expand common Hinglish
+    short forms token by token. NOTE: rows already stored in
+    learned_pairs were written with the older, simpler normaliser, so
+    their stimulus_norm can differ slightly from what this function
+    produces today — the RapidFuzz fuzzy layer in lookup() absorbs
+    that drift, which is why exact misses still resolve there.
     """
     t = (text or "").lower()
     t = _MENTION_RE.sub(" ", t)
     t = _PUNCT_RE.sub(" ", t)
-    t = _SPACES_RE.sub(" ", t)
-    return t.strip()
+    t = _SPACES_RE.sub(" ", t).strip()
+    t = _REPEAT_RE.sub(r"\1\1", t)
+    if not t:
+        return ""
+    return " ".join(_SHORT_FORMS.get(tok, tok) for tok in t.split(" "))
+
+
+def fuzzy_best(norm: str, choices) -> tuple | None:
+    """Best RapidFuzz match for `norm` among `choices` (pure, no DB).
+
+    Score per candidate is max(ratio, token_set_ratio): ratio catches
+    spelling slips ('kse ho' ~ 'kaise ho'), token_set_ratio ignores
+    extra/missing words and word order ('kya haal hai yaar' ~
+    'kya haal hai'). Returns (choice, score 0..100) or None.
+    """
+    if not _RF_AVAILABLE or not norm:
+        return None
+    best_choice = None
+    best_score = -1.0
+    for choice in choices:
+        if not choice:
+            continue
+        score = max(
+            _rf_fuzz.ratio(norm, choice),
+            _rf_fuzz.token_set_ratio(norm, choice),
+        )
+        if score > best_score:
+            best_choice, best_score = choice, score
+    if best_choice is None:
+        return None
+    return (best_choice, best_score)
+
+
+def is_unsafe_text(text: str) -> bool:
+    """Public wrapper over the auto-learn safety filter (stimulus only).
+    Used by the group harvester for sticker associations."""
+    return _pair_is_unsafe(text or "", "")
 
 
 def _chat_scope(chat_id: int) -> str:
@@ -123,12 +211,30 @@ async def _fetch_fuzzy(scope: str, norm: str) -> dict | None:
     return dict(row) if row else None
 
 
+async def _rf_best_stimulus(scope: str, norm: str) -> str | None:
+    """RapidFuzz scan of one scope's stored stimuli: fetch the distinct
+    stimulus_norm values (most-hit first, capped) and return the best
+    one scoring at or above RF_THRESHOLD, else None."""
+    if not _RF_AVAILABLE:
+        return None
+    async with db.pool().acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT stimulus_norm FROM learned_pairs WHERE scope = $1 "
+            "GROUP BY stimulus_norm ORDER BY SUM(hits) DESC LIMIT $2",
+            scope, RF_CANDIDATE_CAP,
+        )
+    best = fuzzy_best(norm, [r["stimulus_norm"] for r in rows])
+    if best and best[1] >= RF_THRESHOLD:
+        return best[0]
+    return None
+
+
 async def lookup(chat_id: int, text: str) -> dict | None:
     """Find a learned response for this message, or None.
 
-    Exact match first — chat scope wins over global. With no exact hit,
-    a pg_trgm fuzzy fallback returns the best above-threshold stimulus
-    (same scope order). Among up to 3 stored responses for the same
+    Order: exact match (chat scope, then global) -> RapidFuzz fuzzy
+    over the scope's stimuli (same scope order) -> pg_trgm fuzzy as a
+    last resort. Among up to 3 stored responses for the matched
     stimulus, pick weighted by hits (popular answers surface more),
     and count the hit.
     """
@@ -138,6 +244,13 @@ async def lookup(chat_id: int, text: str) -> dict | None:
     candidates = await _fetch_candidates(_chat_scope(chat_id), norm)
     if not candidates:
         candidates = await _fetch_candidates(GLOBAL_SCOPE, norm)
+    if not candidates:
+        for scope in (_chat_scope(chat_id), GLOBAL_SCOPE):
+            stimulus = await _rf_best_stimulus(scope, norm)
+            if stimulus:
+                candidates = await _fetch_candidates(scope, stimulus)
+                if candidates:
+                    break
     if not candidates:
         fuzzy = await _fetch_fuzzy(_chat_scope(chat_id), norm)
         if fuzzy is None:

@@ -20,7 +20,7 @@ import random
 from aiogram import Bot, F, Router
 from aiogram.types import Message, ReplyParameters
 
-from .. import db, llm, pairs, stickers, voice
+from .. import db, harvest, llm, pairs, stickers, voice
 from ..config import get_settings
 from ..persona import FALLBACK_REPLIES, MOODS
 
@@ -126,7 +126,17 @@ async def _respond(message: Message, bot: Bot, user_text: str, sticker_boost: fl
         return
 
     wants_sticker = bool(result.get("sticker")) or random.random() < 0.12 + sticker_boost
-    sticker_file = await stickers.pick_for_mood(mood) if wants_sticker else None
+    sticker_file = None
+    if is_group and not synthetic:
+        # A sticker this group itself taught us (harvested associations)
+        # beats the generic mood pool when one matches this message.
+        try:
+            sticker_file = await harvest.pick_for_group(chat_id, user_text)
+        except Exception:
+            log.exception("harvested sticker pick failed")
+            sticker_file = None
+    if sticker_file is None and wants_sticker:
+        sticker_file = await stickers.pick_for_mood(mood)
 
     if sticker_file and result.get("sticker") and random.random() < 0.45:
         # Sometimes the sticker *is* the reply (Nezuko-style).

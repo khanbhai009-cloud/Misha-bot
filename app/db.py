@@ -476,3 +476,144 @@ async def stale_games(older_minutes: int = 10) -> list:
             older_minutes,
         )
     return [dict(r) for r in rows]
+
+
+# -------------------------------------------------- harvested stickers ----
+
+async def record_harvested_sticker(scope: str, kind: str, stimulus_key: str,
+                                   file_id: str, stimulus_raw: str | None = None) -> None:
+    """Record one observed sticker association (see app/harvest.py).
+
+    kind='text'    -> stimulus_key is normalised text the sticker replied to.
+    kind='sticker' -> stimulus_key is the file_id of the sticker replied to.
+    Re-observing the same association just bumps its hit counter.
+    """
+    async with pool().acquire() as conn:
+        await conn.execute(
+            "INSERT INTO harvested_stickers (scope, kind, stimulus_key, stimulus_raw, file_id) "
+            "VALUES ($1, $2, $3, $4, $5) "
+            "ON CONFLICT (scope, kind, stimulus_key, file_id) "
+            "DO UPDATE SET hits = harvested_stickers.hits + 1, updated_at = now()",
+            scope, kind, stimulus_key, stimulus_raw, file_id,
+        )
+
+
+async def harvested_stimulus_keys(scope: str, kind: str = "text", cap: int = 5000) -> list:
+    """Distinct stimulus keys in a scope, most-observed first (capped)."""
+    async with pool().acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT stimulus_key FROM harvested_stickers WHERE scope = $1 AND kind = $2 "
+            "GROUP BY stimulus_key ORDER BY SUM(hits) DESC LIMIT $3",
+            scope, kind, cap,
+        )
+    return [r["stimulus_key"] for r in rows]
+
+
+async def harvested_responses(scope: str, kind: str, stimulus_key: str) -> list:
+    """Sticker file_ids associated with one stimulus, most-observed first."""
+    async with pool().acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT file_id, hits FROM harvested_stickers "
+            "WHERE scope = $1 AND kind = $2 AND stimulus_key = $3 "
+            "ORDER BY hits DESC LIMIT 10",
+            scope, kind, stimulus_key,
+        )
+    return [dict(r) for r in rows]
+
+
+# ------------------------------------------------------------ admin reads ----
+
+async def admin_stats() -> dict:
+    """Aggregate counts for the /admin overview page."""
+    async with pool().acquire() as conn:
+        out = {}
+        out["users"] = await conn.fetchval("SELECT COUNT(*) FROM users WHERE user_id <> 0")
+        out["chat_rows"] = await conn.fetchval("SELECT COUNT(*) FROM chats")
+        out["chats_seen"] = await conn.fetchval("SELECT COUNT(DISTINCT chat_id) FROM chats")
+        out["groups_seen"] = await conn.fetchval(
+            "SELECT COUNT(DISTINCT chat_id) FROM chats WHERE chat_id < 0"
+        )
+        out["pairs_total"] = await conn.fetchval("SELECT COUNT(*) FROM learned_pairs")
+        out["pairs_hits"] = await conn.fetchval(
+            "SELECT COALESCE(SUM(hits), 0) FROM learned_pairs"
+        )
+        rows = await conn.fetch(
+            "SELECT source, COUNT(*) AS n FROM learned_pairs GROUP BY source"
+        )
+        out["pairs_by_source"] = {r["source"]: r["n"] for r in rows}
+        out["sticker_pool"] = await conn.fetchval("SELECT COUNT(*) FROM stickers")
+        out["harvested_total"] = await conn.fetchval("SELECT COUNT(*) FROM harvested_stickers")
+        out["harvested_hits"] = await conn.fetchval(
+            "SELECT COALESCE(SUM(hits), 0) FROM harvested_stickers"
+        )
+        out["games_total"] = await conn.fetchval("SELECT COUNT(*) FROM games")
+        out["games_finished"] = await conn.fetchval(
+            "SELECT COUNT(*) FROM games WHERE status = 'finished'"
+        )
+    return out
+
+
+async def list_pairs(q: str = "", scope: str = "", source: str = "",
+                     limit: int = 25, offset: int = 0):
+    """(rows, total) for the /admin pairs browser."""
+    where = []
+    args: list = []
+    if q:
+        args.append("%" + q + "%")
+        where.append(
+            "(stimulus_norm ILIKE $%d OR stimulus_raw ILIKE $%d OR response ILIKE $%d)"
+            % (len(args), len(args), len(args))
+        )
+    if scope:
+        args.append(scope)
+        where.append("scope = $%d" % len(args))
+    if source:
+        args.append(source)
+        where.append("source = $%d" % len(args))
+    clause = (" WHERE " + " AND ".join(where)) if where else ""
+    async with pool().acquire() as conn:
+        total = await conn.fetchval("SELECT COUNT(*) FROM learned_pairs" + clause, *args)
+        rows = await conn.fetch(
+            "SELECT id, scope, stimulus_norm, stimulus_raw, response, mood, source, "
+            "hits, created_by, created_at FROM learned_pairs" + clause +
+            " ORDER BY id DESC LIMIT $%d OFFSET $%d" % (len(args) + 1, len(args) + 2),
+            *args, limit, offset,
+        )
+    return [dict(r) for r in rows], int(total or 0)
+
+
+async def delete_pair(pair_id: int) -> bool:
+    async with pool().acquire() as conn:
+        status = await conn.execute("DELETE FROM learned_pairs WHERE id = $1", pair_id)
+    return status.endswith(" 1")
+
+
+async def recent_users(limit: int = 25, offset: int = 0):
+    """(rows, total) for the /admin users page, newest first."""
+    async with pool().acquire() as conn:
+        total = await conn.fetchval("SELECT COUNT(*) FROM users WHERE user_id <> 0")
+        rows = await conn.fetch(
+            "SELECT user_id, username, first_name, coins, gems, xp, kills, created_at "
+            "FROM users WHERE user_id <> 0 ORDER BY created_at DESC LIMIT $1 OFFSET $2",
+            limit, offset,
+        )
+    return [dict(r) for r in rows], int(total or 0)
+
+
+async def sticker_pool_rows() -> list:
+    async with pool().acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT file_id, mood, added_by, created_at FROM stickers "
+            "ORDER BY mood, created_at"
+        )
+    return [dict(r) for r in rows]
+
+
+async def top_harvested_stickers(limit: int = 50) -> list:
+    async with pool().acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT scope, kind, stimulus_key, stimulus_raw, file_id, hits, updated_at "
+            "FROM harvested_stickers ORDER BY hits DESC, updated_at DESC LIMIT $1",
+            limit,
+        )
+    return [dict(r) for r in rows]

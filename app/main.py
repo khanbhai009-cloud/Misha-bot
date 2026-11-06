@@ -25,7 +25,8 @@ from aiogram.types import Update
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
-from . import db, pairs
+from . import admin as admin_panel
+from . import db, harvest, pairs
 from .config import get_settings
 from .handlers import chat, common, economy, games, own
 
@@ -46,6 +47,9 @@ dp.include_router(economy.router)
 dp.include_router(games.router)
 dp.include_router(own.router)
 dp.include_router(chat.router)
+# Silent group harvesting observes every fresh message BEFORE handlers
+# run and never consumes the update (see app/harvest.py).
+dp.message.outer_middleware(harvest.HarvestMiddleware())
 
 _queue: asyncio.Queue = asyncio.Queue()
 _seen_updates: set = set()
@@ -91,6 +95,10 @@ async def lifespan(app: FastAPI):
     )
     await db.init_pool()
     await db.init_schema()
+    log.info(
+        "admin panel %s",
+        "enabled at /admin" if settings.admin_panel_key else "disabled (ADMIN_PANEL_KEY unset)",
+    )
     await pairs.ensure_seeds()
     await games.refund_stale_games()
     await db.cleanup_old_messages()
@@ -125,6 +133,8 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(lifespan=lifespan)
+# Admin dashboard — every /admin route 404s while ADMIN_PANEL_KEY is unset.
+app.include_router(admin_panel.router)
 
 
 @app.get("/health")

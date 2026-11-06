@@ -90,6 +90,31 @@ def _in_cooldown(name: str) -> bool:
     return _cooldown_until.get(name, 0.0) > time.monotonic()
 
 
+def provider_status() -> list:
+    """Rotation state for the /admin overview: one dict per provider
+    in configured order (name, model, whether a key is set, cooldown)."""
+    settings = get_settings()
+    models = {
+        "nvidia": settings.nvidia_model,
+        "openrouter": settings.openrouter_model,
+        "groq": settings.groq_model,
+    }
+    keys = {
+        "nvidia": settings.nvidia_api_key,
+        "openrouter": settings.openrouter_api_key,
+        "groq": settings.groq_api_key,
+    }
+    return [
+        {
+            "name": name,
+            "model": models.get(name, ""),
+            "has_key": bool(keys.get(name)),
+            "cooldown": _in_cooldown(name),
+        }
+        for name in _provider_order()
+    ]
+
+
 def _mark_cooldown(name: str) -> None:
     minutes = max(1, get_settings().llm_cooldown_minutes)
     _cooldown_until[name] = time.monotonic() + minutes * 60
