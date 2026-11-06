@@ -271,7 +271,7 @@ async def chat_reply(summary: str, history: list, user_text: str, user_name: str
     lines.append((user_name or "User") + ": " + user_text)
     lines.append("Ab tumhara jawab (sirf JSON):")
     try:
-        raw = await _generate("\n".join(lines), PERSONA_PROMPT, max_tokens=500)
+        raw = await _generate("\n".join(lines), PERSONA_PROMPT, max_tokens=1000)
     except Exception:
         log.exception("LLM chain failed")
         return _fallback()
@@ -296,7 +296,7 @@ async def summarize(old_summary: str, dropped: list) -> str:
         'Sirf JSON do: {"summary": "..."}'
     )
     try:
-        raw = await _generate(prompt, "You compress chat memory into tiny summaries.", max_tokens=500)
+        raw = await _generate(prompt, "You compress chat memory into tiny summaries.", max_tokens=1000)
         if raw:
             data = json.loads(re.sub(r"^```[a-zA-Z]*\s*|\s*```$", "", raw.strip()))
             summary = str(data.get("summary") or "").strip()
