@@ -22,7 +22,7 @@ from aiogram.types import CallbackQuery, Message, ReplyParameters
 
 from .. import db, gender, harvest, llm, pairs, sticker_picker, stickers, voice
 from ..config import get_settings
-from ..persona import FALLBACK_REPLIES, MOODS
+from ..persona import BOT_NAME, FALLBACK_REPLIES, MOODS
 
 log = logging.getLogger("bot.handlers.chat")
 router = Router()
@@ -84,7 +84,22 @@ async def _respond(message: Message, bot: Bot, user_text: str, sticker_boost: fl
 
     user_row = await db.get_or_create_user(user.id, user.username, user.first_name)
     summary, history = await db.get_history(chat_id, user.id)
+    transcript: list = []
+    if is_group:
+        # Shared group transcript — the chats row keyed (chat_id, 0).
+        # One timeline for the whole group, so the LLM can follow a
+        # conversation between several people instead of only this one
+        # user's thread. Fetched BEFORE the current line is appended,
+        # exactly like the per-user history above.
+        try:
+            _t_summary, transcript = await db.get_history(chat_id, 0)
+        except Exception:
+            log.exception("group transcript fetch failed — continuing without it")
+            transcript = []
     dropped = await db.append_message(chat_id, user.id, "user", user_text)
+    if is_group:
+        sender = user.first_name or "User"
+        await db.append_message(chat_id, 0, "user", sender + ": " + user_text)
 
     # Gender: detected deterministically from the user's own Hinglish
     # grammar (app/gender.py) — the prompt rule alone kept slipping,
@@ -126,8 +141,19 @@ async def _respond(message: Message, bot: Bot, user_text: str, sticker_boost: fl
     #    so the same sawal is free next time. Quota-fallback lines are
     #    NOT learned (they are generic, not real answers).
     if result is None:
+        extra_context = None
+        if is_group and transcript:
+            # User lines already carry their sender's name — print
+            # them verbatim; bot lines get the bot's name so the model
+            # can tell who said what.
+            extra_context = [
+                str(m.get("text", "")) if m.get("role") == "user"
+                else BOT_NAME + ": " + str(m.get("text", ""))
+                for m in transcript
+            ]
         result = await llm.chat_reply(
-            summary, history, user_text, user.first_name or "", gender=user_gender
+            summary, history, user_text, user.first_name or "",
+            gender=user_gender, extra_context=extra_context,
         )
         if not synthetic and result["reply"] not in FALLBACK_REPLIES:
             try:
@@ -140,6 +166,8 @@ async def _respond(message: Message, bot: Bot, user_text: str, sticker_boost: fl
     reply_text = result["reply"]
     mood = result["mood"]
     await db.append_message(chat_id, user.id, "bot", reply_text)
+    if is_group:
+        await db.append_message(chat_id, 0, "bot", reply_text)
 
     if dropped:
         asyncio.create_task(_update_summary(chat_id, user.id, summary, dropped))
@@ -150,7 +178,14 @@ async def _respond(message: Message, bot: Bot, user_text: str, sticker_boost: fl
     if await voice.maybe_send_voice_reply(bot, chat_id, reply_text, message.message_id):
         return
 
-    wants_sticker = bool(result.get("sticker")) or random.random() < 0.12 + sticker_boost
+    # Sticker choice (owner's rule): a sticker is picked ONLY when the
+    # LLM flagged one, or the user just sent a sticker (sticker_boost)
+    # and the dice land under 0.12 + boost. In groups, a sticker this
+    # group itself taught us (harvested associations) also counts when
+    # it fires. There is no plain random sticker on ordinary text.
+    wants_sticker = bool(result.get("sticker")) or (
+        sticker_boost > 0 and random.random() < 0.12 + sticker_boost
+    )
     sticker_file = None
     if is_group and not synthetic:
         # A sticker this group itself taught us (harvested associations)
@@ -163,15 +198,14 @@ async def _respond(message: Message, bot: Bot, user_text: str, sticker_boost: fl
     if sticker_file is None and wants_sticker:
         sticker_file = await stickers.pick_for_mood(mood)
 
-    if sticker_file and result.get("sticker") and random.random() < 0.45:
-        # Sometimes the sticker *is* the reply (Nezuko-style).
+    if sticker_file:
+        # A chosen sticker IS the whole visible reply — never text with
+        # a sticker stuck on top. reply_text still lives in the history
+        # and in the learned pairs above; only the visible send differs.
         await bot.send_sticker(chat_id, sticker_file, reply_parameters=reply_params)
         return
 
     await bot.send_message(chat_id, reply_text, reply_parameters=reply_params)
-    if sticker_file:
-        # Text first, sticker as the reaction on top.
-        await bot.send_sticker(chat_id, sticker_file)
 
 
 @router.message(F.text)

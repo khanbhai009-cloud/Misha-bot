@@ -250,7 +250,7 @@ def _parse(raw: str) -> dict:
 
 
 async def chat_reply(summary: str, history: list, user_text: str, user_name: str = "",
-                     gender: str | None = None) -> dict:
+                     gender: str | None = None, extra_context: list | None = None) -> dict:
     """One persona reply for one user message. Never raises.
 
     `gender` is the code-detected user gender ('M'/'F'/None, see
@@ -258,6 +258,15 @@ async def chat_reply(summary: str, history: list, user_text: str, user_name: str
     top of the context — the prompt-level rule alone kept slipping,
     so the model now gets the user's gender as a stated fact instead
     of something it has to infer.
+
+    `extra_context` is an optional list of pre-rendered lines (the
+    shared group transcript, see handlers/chat.py) printed verbatim
+    under a "Group me chal rahi baat:" header, after the per-user
+    history lines. Group user lines already carry their sender's
+    name, so they must NOT go through the history formatter below —
+    it would stamp the current speaker's name on every line. When
+    extra_context is None/empty the prompt is byte-identical to the
+    DM form.
     """
     lines = []
     fact = gender_fact_line(gender)
@@ -268,6 +277,9 @@ async def chat_reply(summary: str, history: list, user_text: str, user_name: str
     for item in history or []:
         who = user_name or "User" if item.get("role") == "user" else "Tum"
         lines.append(who + ": " + str(item.get("text", "")))
+    if extra_context:
+        lines.append("Group me chal rahi baat:")
+        lines.extend(str(line) for line in extra_context)
     lines.append((user_name or "User") + ": " + user_text)
     lines.append("Ab tumhara jawab (sirf JSON):")
     try:
@@ -291,7 +303,7 @@ async def summarize(old_summary: str, dropped: list) -> str:
     prompt = (
         "Purana summary: " + (old_summary or "(kuch nahi)") + "\n\n"
         "Nayi baate jo summary me jodni hai:\n" + convo + "\n\n"
-        "Ek chhota sa updated summary banao (max 40 words, Hinglish chalega) — "
+        "Ek chhota sa updated summary banao (max 90 words, Hinglish chalega) — "
         "user ka naam, pasand/napasand, chal rahi important baate. "
         'Sirf JSON do: {"summary": "..."}'
     )

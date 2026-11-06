@@ -309,7 +309,7 @@ async def get_history(chat_id: int, user_id: int):
     return (row["summary"] or "", fresh)
 
 
-async def append_message(chat_id: int, user_id: int, role: str, text: str, keep: int = 12) -> list:
+async def append_message(chat_id: int, user_id: int, role: str, text: str, keep: int = 30) -> list:
     """Append one message, trim to the last `keep`, return any dropped ones
     (the caller can fold them into the rolling summary)."""
     dropped: list = []

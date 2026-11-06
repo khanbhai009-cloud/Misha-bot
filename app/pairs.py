@@ -184,10 +184,15 @@ def fuzzy_best(norm: str, choices) -> tuple | None:
 # brand-new sentence "mera phone kho gaya, bohot tension ho raha hai"
 # scored 81.5 against the seed stimulus "bore ho raha hai" purely via
 # the shared tail "ho raha hai", and the bot answered a lost-phone
-# message with the boredom pair. The guard below is the acceptance
-# test BOTH fuzzy layers must pass: the stimulus's DISTINCTIVE tokens
-# — its content words, i.e. everything that is not an ultra-common
-# Hinglish function/aux word — must actually show up in the input.
+# message with the boredom pair. Worse, a SHORT stimulus contained
+# whole inside a longer input scores a perfect 100: "naam kya hai"
+# magnet-matched both "meri behen ka naam kya hai?" and "ek baat yaad
+# rakhna, meri behen ka naam Priya hai" in a live group. The guard
+# below is the acceptance test BOTH fuzzy layers must pass: the
+# stimulus's DISTINCTIVE tokens — its content words, i.e. everything
+# that is not an ultra-common Hinglish function/aux word — must
+# actually show up in the input, and for short stimuli the input must
+# not be about anything else besides (see guard_accepts).
 
 _GUARD_STOPWORDS = frozenset({
     "ho", "raha", "rahi", "rahe", "hai", "hain", "h", "hu", "hun",
@@ -195,7 +200,7 @@ _GUARD_STOPWORDS = frozenset({
     "aaj", "kal", "bohot", "bahut", "bhi", "toh", "aur", "ek",
     "ye", "yeh", "wo", "woh", "na", "ne", "se", "par", "ko", "yaar",
     "abhi", "kuch", "mera", "meri", "mere", "tera", "teri",
-    "uska", "uski", "kar",
+    "uska", "uski", "kar", "apna", "apni", "apne",
 })
 
 
@@ -211,9 +216,15 @@ def guard_accepts(input_norm: str, stimulus_norm: str) -> bool:
     Both sides are normalised here (normalize() is idempotent, and
     stored stimuli written by older normaliser versions get judged by
     their modern form). Rules:
-    - The stimulus HAS distinctive tokens: with 1-2 of them, ALL must
-      appear among the input's tokens; with 3 or more, at least 60%
-      must appear.
+    - The stimulus HAS distinctive tokens:
+      - 1-2 of them: ALL must appear among the input's tokens, AND
+        the input's own distinctive tokens must be a subset of the
+        stimulus's. Containment alone is not evidence for a short
+        stimulus — token_set_ratio gives "naam kya hai" a perfect
+        score inside "meri behen ka naam kya hai", but the extra
+        content word (behen) makes it a different sawal.
+      - 3 or more: at least 60% must appear (longer stimuli have
+        enough signal that paraphrase drift is fine).
     - The stimulus has NO distinctive tokens (a pure function-word
       phrase like "kya kar rahi ho", where a fuzzy score is nothing
       but filler overlap): the input must be that same phrase modulo
@@ -232,7 +243,7 @@ def guard_accepts(input_norm: str, stimulus_norm: str) -> bool:
         return set(stim.split()) <= input_tokens and not distinctive_tokens(inp)
     present = distinctive & input_tokens
     if len(distinctive) <= 2:
-        return len(present) == len(distinctive)
+        return len(present) == len(distinctive) and distinctive_tokens(inp) <= distinctive
     return len(present) / len(distinctive) >= 0.6
 
 
