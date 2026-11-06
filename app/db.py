@@ -115,6 +115,22 @@ async def get_user_by_username(username: str) -> dict | None:
     return dict(row) if row else None
 
 
+async def set_user_gender(user_id: int, gender: str) -> None:
+    """Persist a gender detected by app.gender.detect_gender.
+
+    Callers only ever pass a fresh confident detection, so a stored
+    opposite value is overwritten (a misdetection stays correctable),
+    while None is never written — an unknown message can never clear
+    a known gender.
+    """
+    async with pool().acquire() as conn:
+        await conn.execute(
+            "UPDATE users SET gender = $2 WHERE user_id = $1 "
+            "AND gender IS DISTINCT FROM $2",
+            user_id, gender,
+        )
+
+
 async def get_rank(user_id: int) -> int:
     async with pool().acquire() as conn:
         rank = await conn.fetchval(

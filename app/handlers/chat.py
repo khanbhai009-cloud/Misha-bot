@@ -20,7 +20,7 @@ import random
 from aiogram import Bot, F, Router
 from aiogram.types import CallbackQuery, Message, ReplyParameters
 
-from .. import db, harvest, llm, pairs, sticker_picker, stickers, voice
+from .. import db, gender, harvest, llm, pairs, sticker_picker, stickers, voice
 from ..config import get_settings
 from ..persona import FALLBACK_REPLIES, MOODS
 
@@ -82,13 +82,33 @@ async def _respond(message: Message, bot: Bot, user_text: str, sticker_boost: fl
     chat_id = message.chat.id
     is_group = message.chat.type != "private"
 
-    await db.get_or_create_user(user.id, user.username, user.first_name)
+    user_row = await db.get_or_create_user(user.id, user.username, user.first_name)
     summary, history = await db.get_history(chat_id, user.id)
     dropped = await db.append_message(chat_id, user.id, "user", user_text)
 
+    # Gender: detected deterministically from the user's own Hinglish
+    # grammar (app/gender.py) — the prompt rule alone kept slipping,
+    # so the LLM gets it as a FACT line. Sticky on the users row: this
+    # message first, then (only while still unknown) recent history.
+    # Sticker triggers send synthetic pseudo-text; those skip detection.
+    synthetic = user_text.startswith("[user ne")
+    user_gender = user_row.get("gender")
+    if not synthetic:
+        detected = gender.detect_gender(user_text)
+        if detected is None and user_gender is None:
+            past_texts = [
+                str(m.get("text", ""))
+                for m in reversed(history)
+                if m.get("role") == "user"
+            ]
+            detected = gender.detect_gender_in_texts(past_texts)
+        merged = gender.resolve_gender(user_gender, detected)
+        if merged is not None and merged != user_gender:
+            await db.set_user_gender(user.id, merged)
+            user_gender = merged
+
     # 1) DB-trained pairs layer — a hit answers with ZERO LLM requests.
     #    (Sticker triggers send synthetic pseudo-text; those skip the layer.)
-    synthetic = user_text.startswith("[user ne")
     result = None
     if not synthetic:
         try:
@@ -106,7 +126,9 @@ async def _respond(message: Message, bot: Bot, user_text: str, sticker_boost: fl
     #    so the same sawal is free next time. Quota-fallback lines are
     #    NOT learned (they are generic, not real answers).
     if result is None:
-        result = await llm.chat_reply(summary, history, user_text, user.first_name or "")
+        result = await llm.chat_reply(
+            summary, history, user_text, user.first_name or "", gender=user_gender
+        )
         if not synthetic and result["reply"] not in FALLBACK_REPLIES:
             try:
                 await pairs.learn(

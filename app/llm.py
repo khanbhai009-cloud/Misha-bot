@@ -38,6 +38,7 @@ import time
 import httpx
 
 from .config import get_settings
+from .gender import gender_fact_line
 from .persona import FALLBACK_REPLIES, MOODS, PERSONA_PROMPT
 
 log = logging.getLogger("bot.llm")
@@ -248,9 +249,20 @@ def _parse(raw: str) -> dict:
     return {"reply": reply[:500], "mood": mood, "sticker": bool(data.get("sticker"))}
 
 
-async def chat_reply(summary: str, history: list, user_text: str, user_name: str = "") -> dict:
-    """One persona reply for one user message. Never raises."""
+async def chat_reply(summary: str, history: list, user_text: str, user_name: str = "",
+                     gender: str | None = None) -> dict:
+    """One persona reply for one user message. Never raises.
+
+    `gender` is the code-detected user gender ('M'/'F'/None, see
+    app/gender.py). When known it goes in as a FACT line at the very
+    top of the context — the prompt-level rule alone kept slipping,
+    so the model now gets the user's gender as a stated fact instead
+    of something it has to infer.
+    """
     lines = []
+    fact = gender_fact_line(gender)
+    if fact:
+        lines.append(fact)
     if summary:
         lines.append("Purani baato ka summary: " + summary)
     for item in history or []:

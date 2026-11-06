@@ -18,6 +18,13 @@ CREATE TABLE IF NOT EXISTS users (
     created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+-- Gender of the chatting user as detected from their own Hinglish
+-- grammar by app/gender.py: 'M', 'F', or NULL while unknown. Sticky —
+-- set on first confident signal, only a confident opposite signal
+-- overwrites it. Handed to the LLM as a hard FACT line because the
+-- persona prompt alone could not hold the user's gender.
+ALTER TABLE users ADD COLUMN IF NOT EXISTS gender TEXT;
+
 -- House account: escrow for game stakes and house cut. Never a real user.
 INSERT INTO users (user_id, username, first_name)
 VALUES (0, 'house', 'House')
