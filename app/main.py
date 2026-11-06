@@ -137,6 +137,11 @@ app = FastAPI(lifespan=lifespan)
 app.include_router(admin_panel.router)
 
 
+# Pure liveness for external uptime pingers (cron-job.org) — no DB, no
+# provider calls. /ping is the canonical URL to point a pinger at (the
+# root path 404s by design); /health is the same check under its
+# conventional name.
+@app.get("/ping")
 @app.get("/health")
 async def health():
     return {"status": "ok"}
