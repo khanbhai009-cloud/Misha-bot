@@ -18,9 +18,9 @@ import logging
 import random
 
 from aiogram import Bot, F, Router
-from aiogram.types import Message, ReplyParameters
+from aiogram.types import CallbackQuery, Message, ReplyParameters
 
-from .. import db, harvest, llm, pairs, stickers, voice
+from .. import db, harvest, llm, pairs, sticker_picker, stickers, voice
 from ..config import get_settings
 from ..persona import FALLBACK_REPLIES, MOODS
 
@@ -195,6 +195,60 @@ async def _handle_text(message: Message, bot: Bot) -> None:
         await _respond(message, bot, clean)
 
 
+@router.callback_query(F.data.startswith(sticker_picker.CALLBACK_PREFIX + ":"))
+async def on_sticker_pick(callback: CallbackQuery, bot: Bot) -> None:
+    try:
+        await _handle_sticker_pick(callback, bot)
+    except Exception:
+        log.exception("sticker pick handler failed")
+
+
+async def _handle_sticker_pick(callback: CallbackQuery, bot: Bot) -> None:
+    """One tap on a sticker-mood prompt (see sticker_picker).
+
+    Only the owner's tap counts — anyone else's is a silent no-op and
+    does NOT consume the pending entry. A valid tap pops the token,
+    saves through the same stickers.save_sticker path the caption flow
+    uses, and edits the prompt into its final text (buttons removed).
+    """
+    parsed = sticker_picker.parse_callback(callback.data or "")
+    if parsed is None:
+        await callback.answer()
+        return
+    token, choice = parsed
+    if choice != sticker_picker.CANCEL_CHOICE and choice not in MOODS:
+        await callback.answer()
+        return
+    settings = get_settings()
+    if callback.from_user is None or callback.from_user.id != settings.admin_id:
+        await callback.answer()
+        return
+    file_id = sticker_picker.resolve(token)
+    if file_id is None:
+        await callback.answer("This one expired — send the sticker again.")
+        return
+    prompt = callback.message
+    if choice == sticker_picker.CANCEL_CHOICE:
+        if prompt is not None:
+            await bot.edit_message_text(
+                "❌ Skipped",
+                chat_id=prompt.chat.id,
+                message_id=prompt.message_id,
+                reply_markup=sticker_picker.cleared_markup(),
+            )
+        await callback.answer()
+        return
+    await stickers.save_sticker(file_id, choice, callback.from_user.id)
+    if prompt is not None:
+        await bot.edit_message_text(
+            "✅ Saved to " + choice.capitalize() + " " + sticker_picker.MOOD_EMOJI[choice],
+            chat_id=prompt.chat.id,
+            message_id=prompt.message_id,
+            reply_markup=sticker_picker.cleared_markup(),
+        )
+    await callback.answer()
+
+
 @router.message(F.sticker)
 async def on_sticker(message: Message, bot: Bot) -> None:
     try:
@@ -219,9 +273,13 @@ async def _handle_sticker(message: Message, bot: Bot) -> None:
                 "That's not a mood 😅 Put one of these in the caption: " + ", ".join(MOODS)
             )
         else:
+            # No caption: offer the mood buttons instead of instructions.
+            # Each sticker gets its own token + prompt, so the owner can
+            # send a batch back-to-back and tap moods in any order.
+            token = sticker_picker.stash(message.sticker.file_id)
             await message.answer(
-                "To add this sticker to the pool, send it with a mood as the caption "
-                "(" + ", ".join(MOODS) + ") — or reply to the sticker with the mood word."
+                "Which mood should this sticker go to?",
+                reply_markup=sticker_picker.build_keyboard(token),
             )
         return
 
