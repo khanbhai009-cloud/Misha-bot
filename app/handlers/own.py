@@ -26,13 +26,13 @@ log = logging.getLogger("bot.handlers.own")
 router = Router()
 
 USAGE = (
-    "📌 <b>/own kaise use karein</b>\n\n"
-    "Kisi sticker par <b>reply</b> karke:\n"
-    "• /own → latest pack me save\n"
-    "• /own 2 → pack #2 me save\n"
-    "• /own new → naya pack bana kar save\n\n"
-    "Bina reply ke:\n"
-    "• /own list → tumhare saare packs"
+    "📌 <b>How to use /own</b>\n\n"
+    "<b>Reply</b> to any sticker with:\n"
+    "• /own → save to your latest pack\n"
+    "• /own 2 → save to pack #2\n"
+    "• /own new → create a new pack and save\n\n"
+    "Without a reply:\n"
+    "• /own list → all your packs"
 )
 
 
@@ -53,7 +53,7 @@ async def _create_pack(bot: Bot, message: Message, index: int, fmt: str, sticker
     me = await bot.get_me()
     user = message.from_user
     name = _pack_name(user.id, index, me.username)
-    title = ((user.first_name or "Misha") + " ke stickers #" + str(index))[:60]
+    title = ((user.first_name or "Misha") + "'s stickers #" + str(index))[:60]
     inp = InputSticker(
         sticker=sticker.file_id,
         format=fmt,
@@ -81,7 +81,7 @@ async def _save_to_pack(bot: Bot, message: Message, index: int) -> None:
                 # recover by adopting it — add the sticker and record it.
                 me = await bot.get_me()
                 name = _pack_name(message.from_user.id, index, me.username)
-                title = ((message.from_user.first_name or "Misha") + " ke stickers #" + str(index))[:60]
+                title = ((message.from_user.first_name or "Misha") + "'s stickers #" + str(index))[:60]
                 try:
                     await bot.add_sticker_to_set(
                         user_id=message.from_user.id, name=name,
@@ -91,22 +91,22 @@ async def _save_to_pack(bot: Bot, message: Message, index: int) -> None:
                     await db.create_pack_record(message.from_user.id, index, name, title, fmt)
                     pack = {"pack_name": name, "format": fmt}
                 except TelegramBadRequest:
-                    await message.reply("😬 Pack banane me kuch gadbad ho gayi. Thodi der baad phir try karo!")
+                    await message.reply("😬 Something went wrong creating the pack. Try again in a bit!")
                     return
             else:
                 log.exception("create_new_sticker_set failed")
-                await message.reply("😬 Pack nahi ban paya: " + str(exc)[:150])
+                await message.reply("😬 Couldn't create the pack: " + str(exc)[:150])
                 return
         await message.reply(
-            "✨ Naya pack #" + str(index) + " ban gaya aur sticker save ho gaya!\n"
+            "✨ New pack #" + str(index) + " created and the sticker is saved!\n"
             "👉 https://t.me/addstickers/" + pack["pack_name"]
         )
         return
 
     if pack.get("format") != fmt:
         await message.reply(
-            "⚠️ Ye sticker " + fmt + " hai, par pack #" + str(index) + " " + str(pack.get("format"))
-            + " format ka hai — format mix nahi hota. /own new se iske liye alag pack banao!"
+            "⚠️ This sticker is " + fmt + ", but pack #" + str(index) + " is " + str(pack.get("format"))
+            + " format — formats can't be mixed. Use /own new to make a separate pack for it!"
         )
         return
 
@@ -123,17 +123,17 @@ async def _save_to_pack(bot: Bot, message: Message, index: int) -> None:
         text = str(exc).lower()
         if "full" in text:
             await message.reply(
-                "📦 Pack #" + str(index) + " full ho gaya hai (Telegram ki limit). "
-                "/own new likh kar naya pack shuru karo!"
+                "📦 Pack #" + str(index) + " is full (Telegram's limit). "
+                "Start a new pack with /own new!"
             )
         elif "invalid" in text and "sticker" in text:
-            await message.reply("😬 Ye sticker is pack me add nahi ho sakta (format/duplicate issue). Dusra sticker try karo!")
+            await message.reply("😬 This sticker can't be added to this pack (format/duplicate issue). Try another sticker!")
         else:
             log.exception("add_sticker_to_set failed")
-            await message.reply("😬 Sticker save nahi hua: " + str(exc)[:150])
+            await message.reply("😬 The sticker couldn't be saved: " + str(exc)[:150])
         return
     await message.reply(
-        "✅ Sticker pack #" + str(index) + " me save ho gaya!\n"
+        "✅ Saved to sticker pack #" + str(index) + "!\n"
         "👉 https://t.me/addstickers/" + pack["pack_name"]
     )
 
@@ -148,9 +148,9 @@ async def cmd_own(message: Message, command: CommandObject) -> None:
     if arg == "list":
         packs = await db.get_user_packs(user.id)
         if not packs:
-            await message.reply("📦 Abhi tumhara koi pack nahi hai.\n\n" + USAGE)
+            await message.reply("📦 You don't have any pack yet.\n\n" + USAGE)
             return
-        lines = ["📦 <b>Tumhare sticker packs:</b>"]
+        lines = ["📦 <b>Your sticker packs:</b>"]
         for p in packs:
             lines.append(
                 "• Pack #" + str(p["pack_index"]) + " (" + str(p["format"]) + "): "
@@ -180,4 +180,4 @@ async def cmd_own(message: Message, command: CommandObject) -> None:
         await _save_to_pack(message.bot, message, index)
     except Exception:
         log.exception("/own failed")
-        await message.reply("😬 Kuch gadbad ho gayi — thodi der baad phir try karo!")
+        await message.reply("😬 Something went wrong — try again in a bit!")

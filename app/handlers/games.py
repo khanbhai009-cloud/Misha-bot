@@ -59,21 +59,21 @@ async def _lobby_text(game: dict, players: list) -> str:
         names.append("• " + mention(p["user_id"], await _player_name(p["user_id"])))
     pot = int(game["amount"]) * len(players)
     lines = [
-        "💣 <b>BOMB GAME — Lobby khula hai!</b>",
-        "🎟 Stake: <b>" + "{:,}".format(int(game["amount"])) + "</b> coins har player",
-        "💰 Pot abhi: <b>" + "{:,}".format(pot) + "</b> coins",
+        "💣 <b>BOMB GAME — Lobby is open!</b>",
+        "🎟 Stake: <b>" + "{:,}".format(int(game["amount"])) + "</b> coins per player",
+        "💰 Pot so far: <b>" + "{:,}".format(pot) + "</b> coins",
         "",
         "<b>Players (" + str(len(players)) + "):</b>",
     ] + names + [
         "",
-        "Bomb jiske haath me phatega woh out, last bacha player pot jeetega!",
+        "Whoever holds the bomb when it explodes is out — the last player standing wins the pot!",
     ]
     return "\n".join(lines)
 
 
 def _lobby_keyboard(game_id: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🙋 Join karo", callback_data="bomb:join:" + str(game_id)),
+        [InlineKeyboardButton(text="🙋 Join", callback_data="bomb:join:" + str(game_id)),
          InlineKeyboardButton(text="▶️ Start (host)", callback_data="bomb:start:" + str(game_id))],
         [InlineKeyboardButton(text="❌ Cancel (host)", callback_data="bomb:cancel:" + str(game_id))],
     ])
@@ -81,7 +81,7 @@ def _lobby_keyboard(game_id: int) -> InlineKeyboardMarkup:
 
 def _pass_keyboard(game_id: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="💣 Bomb pass karo!", callback_data="bomb:pass:" + str(game_id))]
+        [InlineKeyboardButton(text="💣 Pass the bomb!", callback_data="bomb:pass:" + str(game_id))]
     ])
 
 
@@ -99,7 +99,7 @@ async def _cancel_game(bot: Bot, game_id: int, reason: str) -> None:
     await _refund_everyone(game)
     await db.set_game_fields(game_id, status="cancelled", finished_at=datetime.now(timezone.utc))
     try:
-        await bot.send_message(game["chat_id"], "🚫 Bomb game cancel ho gaya — " + reason + " Sabke stakes wapas kar diye gaye.")
+        await bot.send_message(game["chat_id"], "🚫 Bomb game cancelled — " + reason + " Everyone's stakes have been refunded.")
     except Exception:
         log.exception("cancel notice failed")
 
@@ -123,11 +123,11 @@ async def refund_stale_games() -> None:
 @router.message(Command("bomb"))
 async def cmd_bomb(message: Message, command: CommandObject) -> None:
     if message.chat.type == "private":
-        await message.reply("💣 Bomb game <b>group</b> me khelte hain — mujhe group me add karo aur wahan /bomb likho!")
+        await message.reply("💣 The bomb game is played in a <b>group</b> — add me to a group and send /bomb there!")
         return
     arg = (command.args or "").strip()
     if not arg.isdigit() or int(arg) <= 0:
-        await message.reply("💣 Usage: /bomb &lt;amount&gt; — jaise /bomb 500")
+        await message.reply("💣 Usage: /bomb &lt;amount&gt; — e.g. /bomb 500")
         return
     amount = int(arg)
     creator = message.from_user
@@ -135,14 +135,14 @@ async def cmd_bomb(message: Message, command: CommandObject) -> None:
 
     existing = await db.active_game_in_chat(message.chat.id)
     if existing:
-        await message.reply("⏳ Is group me pehle se ek bomb game chal raha hai (stake " + "{:,}".format(int(existing["amount"])) + ") — pehle woh khatm ho jaye!")
+        await message.reply("⏳ A bomb game is already running in this group (stake " + "{:,}".format(int(existing["amount"])) + ") — let it finish first!")
         return
 
     ok, _ = await db.transfer(creator.id, HOUSE_ID, amount, tax_percent=0.0)
     if not ok:
         row = await db.get_user(creator.id)
         bal = int((row or {}).get("coins") or 0)
-        await message.reply("😅 Itne coins nahi hain — stake " + "{:,}".format(amount) + ", tumhare paas " + "{:,}".format(bal) + ". /daily se kamao!")
+        await message.reply("😅 Not enough coins — stake is " + "{:,}".format(amount) + ", you have " + "{:,}".format(bal) + ". Earn more with /daily!")
         return
 
     game_id = await db.create_game(message.chat.id, creator.id, amount)
@@ -161,7 +161,7 @@ async def _lobby_timer(bot: Bot, game_id: int) -> None:
         return
     players = await db.get_game_players(game_id)
     if len(players) < 2:
-        await _cancel_game(bot, game_id, "sirf ek hi player aaya, game ban hi nahi paya.")
+        await _cancel_game(bot, game_id, "only one player joined, so the game couldn't start.")
         return
     await _start_game(bot, game)
 
@@ -172,16 +172,16 @@ async def on_join(callback: CallbackQuery) -> None:
     game = await db.get_game(game_id)
     user = callback.from_user
     if not game or game["status"] != "lobby":
-        await callback.answer("Lobby band ho chuka hai 😅", show_alert=True)
+        await callback.answer("The lobby is already closed 😅", show_alert=True)
         return
     players = await db.get_game_players(game_id)
     if any(p["user_id"] == user.id for p in players):
-        await callback.answer("Tum pehle se joined ho 😄")
+        await callback.answer("You've already joined 😄")
         return
     await db.get_or_create_user(user.id, user.username, user.first_name)
     ok, _ = await db.transfer(user.id, HOUSE_ID, int(game["amount"]), tax_percent=0.0)
     if not ok:
-        await callback.answer("Coins kam hain — stake " + "{:,}".format(int(game["amount"])) + " chahiye 😅", show_alert=True)
+        await callback.answer("Not enough coins — you need a stake of " + "{:,}".format(int(game["amount"])) + " 😅", show_alert=True)
         return
     await db.add_game_player(game_id, user.id)
     await callback.answer("Joined! 💣 All the best")
@@ -200,16 +200,16 @@ async def on_start(callback: CallbackQuery) -> None:
     game_id = int(callback.data.rsplit(":", 1)[1])
     game = await db.get_game(game_id)
     if not game or game["status"] != "lobby":
-        await callback.answer("Game pehle hi shuru/ khatm ho chuka hai", show_alert=True)
+        await callback.answer("The game has already started/finished", show_alert=True)
         return
     if callback.from_user.id != game["creator_id"]:
-        await callback.answer("Sirf host start kar sakta hai 😄", show_alert=True)
+        await callback.answer("Only the host can start 😄", show_alert=True)
         return
     players = await db.get_game_players(game_id)
     if len(players) < 2:
-        await callback.answer("Kam se kam 2 players chahiye!", show_alert=True)
+        await callback.answer("Need at least 2 players!", show_alert=True)
         return
-    await callback.answer("Game shuru! 💣")
+    await callback.answer("Game started! 💣")
     await _start_game(callback.bot, game)
 
 
@@ -218,13 +218,13 @@ async def on_cancel(callback: CallbackQuery) -> None:
     game_id = int(callback.data.rsplit(":", 1)[1])
     game = await db.get_game(game_id)
     if not game or game["status"] != "lobby":
-        await callback.answer("Ab cancel nahi ho sakta", show_alert=True)
+        await callback.answer("Can't cancel now", show_alert=True)
         return
     if callback.from_user.id != game["creator_id"]:
-        await callback.answer("Sirf host cancel kar sakta hai", show_alert=True)
+        await callback.answer("Only the host can cancel", show_alert=True)
         return
-    await callback.answer("Cancel kar rahi hu…")
-    await _cancel_game(callback.bot, game_id, "host ne cancel kar diya.")
+    await callback.answer("Cancelling…")
+    await _cancel_game(callback.bot, game_id, "the host cancelled it.")
 
 
 # ------------------------------------------------------------------ play --
@@ -232,7 +232,7 @@ async def on_cancel(callback: CallbackQuery) -> None:
 async def _start_game(bot: Bot, game: dict) -> None:
     players = await db.get_game_players(game["id"], alive_only=True)
     if len(players) < 2:
-        await _cancel_game(bot, game["id"], "players kam pad gaye.")
+        await _cancel_game(bot, game["id"], "not enough players left.")
         return
     holder = random.choice(players)["user_id"]
     await db.set_game_fields(
@@ -248,8 +248,8 @@ async def _start_game(bot: Bot, game: dict) -> None:
             pass
     await bot.send_message(
         game["chat_id"],
-        "💣💥 <b>GAME SHURU!</b>\nBomb " + mention(holder, await _player_name(holder))
-        + " ke paas hai! Phodne se pehle <b>Pass</b> dabao!",
+        "💣💥 <b>GAME STARTED!</b>\nThe bomb is with " + mention(holder, await _player_name(holder))
+        + "! Press <b>Pass</b> before it explodes!",
         reply_markup=_pass_keyboard(game["id"]),
     )
     _arm_fuse(bot, game["id"], holder)
@@ -277,19 +277,19 @@ async def on_pass(callback: CallbackQuery) -> None:
     game_id = int(callback.data.rsplit(":", 1)[1])
     game = await db.get_game(game_id)
     if not game or game["status"] != "running":
-        await callback.answer("Game khatm ho chuka hai", show_alert=True)
+        await callback.answer("The game is over", show_alert=True)
         return
     if callback.from_user.id != game.get("current_holder"):
-        await callback.answer("Bomb tumhare paas nahi hai 😄 wait karo", show_alert=True)
+        await callback.answer("The bomb isn't with you 😄 just wait", show_alert=True)
         return
     alive = await db.get_game_players(game_id, alive_only=True)
     others = [p for p in alive if p["user_id"] != callback.from_user.id]
     if not others:
-        await callback.answer("Koi aur bacha hi nahi!")
+        await callback.answer("Nobody else is left!")
         return
     next_holder = random.choice(others)["user_id"]
     await db.set_game_fields(game_id, current_holder=next_holder)
-    await callback.answer("Pass kar diya! 😮‍💨")
+    await callback.answer("Passed! 😮‍💨")
     if isinstance(callback.message, Message):
         _round_msg[game_id] = callback.message.message_id
         try:
@@ -298,7 +298,7 @@ async def on_pass(callback: CallbackQuery) -> None:
             pass
     await callback.bot.send_message(
         game["chat_id"],
-        "💣 Bomb ab " + mention(next_holder, await _player_name(next_holder)) + " ke paas hai! Jaldi pass karo!",
+        "💣 The bomb is now with " + mention(next_holder, await _player_name(next_holder)) + "! Pass it fast!",
         reply_markup=_pass_keyboard(game_id),
     )
     _arm_fuse(callback.bot, game_id, next_holder)
@@ -325,9 +325,9 @@ async def _explode(bot: Bot, game: dict, holder_id: int) -> None:
             wname = await _player_name(winner)
             await bot.send_message(
                 game["chat_id"],
-                "💥💣 <b>BOOOOM!</b> Bomb " + mention(holder_id, name) + " ke haath me phat gaya!\n\n"
-                "🏆 " + mention(winner, wname) + " akhri bacha — pot <b>" + "{:,}".format(payout)
-                + "</b> coins jeeta! (pot " + "{:,}".format(pot) + ", 5% house cut)",
+                "💥💣 <b>BOOOOM!</b> The bomb exploded in " + mention(holder_id, name) + "'s hands!\n\n"
+                "🏆 " + mention(winner, wname) + " is the last one standing — won <b>" + "{:,}".format(payout)
+                + "</b> coins! (pot " + "{:,}".format(pot) + ", 5% house cut)",
             )
         return
 
@@ -335,9 +335,9 @@ async def _explode(bot: Bot, game: dict, holder_id: int) -> None:
     await db.set_game_fields(game_id, current_holder=next_holder)
     await bot.send_message(
         game["chat_id"],
-        "💥💣 <b>BOOOOM!</b> " + mention(holder_id, name) + " out ho gaya! Uska stake pot me gaya.\n"
-        "Bache hue players: <b>" + str(len(alive)) + "</b>\n\n"
-        "💣 Bomb ab " + mention(next_holder, await _player_name(next_holder)) + " ke paas hai!",
+        "💥💣 <b>BOOOOM!</b> " + mention(holder_id, name) + " is out! Their stake went into the pot.\n"
+        "Players left: <b>" + str(len(alive)) + "</b>\n\n"
+        "💣 The bomb is now with " + mention(next_holder, await _player_name(next_holder)) + "!",
         reply_markup=_pass_keyboard(game_id),
     )
     _arm_fuse(bot, game_id, next_holder)

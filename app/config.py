@@ -12,7 +12,7 @@ class Settings:
     webhook_secret: str
     database_url: str
     nvidia_api_key: str = ""
-    nvidia_model: str = "meta/llama-3.3-70b-instruct"
+    nvidia_model: str = "meta/llama-3.2-90b-vision-instruct"
     openrouter_api_key: str = ""
     openrouter_model: str = "openrouter/free"
     groq_api_key: str = ""
@@ -33,7 +33,7 @@ class Settings:
             webhook_secret=os.getenv("WEBHOOK_SECRET", ""),
             database_url=os.getenv("DATABASE_URL", ""),
             nvidia_api_key=os.getenv("NVIDIA_API_KEY", ""),
-            nvidia_model=os.getenv("NVIDIA_MODEL", "meta/llama-3.3-70b-instruct"),
+            nvidia_model=os.getenv("NVIDIA_MODEL", "meta/llama-3.2-90b-vision-instruct"),
             groq_api_key=os.getenv("GROQ_API_KEY", ""),
             groq_model=os.getenv("GROQ_MODEL", "openai/gpt-oss-120b"),
             openrouter_api_key=os.getenv("OPENROUTER_API_KEY", ""),

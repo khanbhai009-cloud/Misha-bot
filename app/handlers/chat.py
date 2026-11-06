@@ -167,7 +167,7 @@ async def _handle_text(message: Message, bot: Bot) -> None:
         ):
             mood = text.strip().lower()
             await stickers.save_sticker(rt.sticker.file_id, mood, user.id)
-            await message.answer("✅ Sticker pool me save ho gaya — mood: <b>" + mood + "</b>")
+            await message.answer("✅ Saved to the sticker pool — mood: <b>" + mood + "</b>")
             return
         async with _chat_lock(message.chat.id):
             await _respond(message, bot, text)
@@ -200,15 +200,15 @@ async def _handle_sticker(message: Message, bot: Bot) -> None:
         caption = (message.caption or "").strip().lower()
         if caption in MOODS:
             await stickers.save_sticker(message.sticker.file_id, caption, user.id)
-            await message.answer("✅ Sticker pool me save ho gaya — mood: <b>" + caption + "</b>")
+            await message.answer("✅ Saved to the sticker pool — mood: <b>" + caption + "</b>")
         elif caption:
             await message.answer(
-                "Ye mood nahi hai 😅 Caption me inme se ek likho: " + ", ".join(MOODS)
+                "That's not a mood 😅 Put one of these in the caption: " + ", ".join(MOODS)
             )
         else:
             await message.answer(
-                "Is sticker ko pool me daalna hai toh caption me mood likh kar bhejo "
-                "(" + ", ".join(MOODS) + ") — ya sticker par reply karke mood word bhej do."
+                "To add this sticker to the pool, send it with a mood as the caption "
+                "(" + ", ".join(MOODS) + ") — or reply to the sticker with the mood word."
             )
         return
 

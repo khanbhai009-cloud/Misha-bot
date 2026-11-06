@@ -26,7 +26,7 @@ def stats_card(u: dict) -> str:
     prot = ""
     until = u.get("protected_until")
     if until and until > datetime.now(timezone.utc):
-        prot = "\n🛡 Protection: ON (rob/kill se safe)"
+        prot = "\n🛡 Protection: ON (safe from rob/kill)"
     coins = "{:,}".format(int(u.get("coins") or 0))
     gems = u.get("gems") or 0
     lines = [
@@ -49,30 +49,31 @@ def start_keyboard(bot_username: str) -> InlineKeyboardMarkup:
 
 
 FEATURES_TEXT = (
-    "🍀 <b>" + BOT_NAME + " ke features</b>\n\n"
-    "💬 <b>Chat</b> — DM me kuch bhi bolo, group me @" + BOT_NAME + " ko tag karo ya uske message par reply karo\n"
+    "🍀 <b>" + BOT_NAME + "'s features</b>\n\n"
+    "💬 <b>Chat</b> — say anything in DM; in a group, tag @" + BOT_NAME + " or reply to her message\n"
     "💰 <b>Economy</b> — /daily, /bal, /rob, /kill, /protect, /give, /toprich\n"
     "🎮 <b>Games</b> — /bomb group game, /truth, /dare, /joke\n"
-    "🖼 <b>/own</b> — kisi sticker par reply karke /own likho, tumhara apna sticker pack ban jayega\n"
-    "🎭 Mood ke hisaab se kabhi kabhi sticker se bhi jawab milega"
+    "🖼 <b>/own</b> — reply to any sticker with /own and it becomes your own sticker pack\n"
+    "🎭 Sometimes she replies with a sticker too, depending on her mood"
 )
 
 GAMES_TEXT = (
     "🎮 <b>Games</b>\n\n"
-    "💣 <b>/bomb &lt;amount&gt;</b> — group game: sab same amount lagate hain, bomb pass hota rehta hai, "
-    "jo phatne par pakda gaya woh out. Last bacha player pura pot jeet-ta hai (5% house cut).\n"
-    "😜 <b>/truth</b>, <b>/dare</b>, <b>/joke</b> — bina paiso wala fun, group me ya DM me."
+    "💣 <b>/bomb &lt;amount&gt;</b> — group game: everyone stakes the same amount, the bomb keeps "
+    "getting passed, and whoever is holding it when it explodes is out. The last player standing "
+    "wins the whole pot (5% house cut).\n"
+    "😜 <b>/truth</b>, <b>/dare</b>, <b>/joke</b> — free fun, in groups or DM."
 )
 
 ECONOMY_TEXT = (
     "💰 <b>Economy</b>\n\n"
-    "🎁 /daily — roz 2000 coins + 50 XP (sirf DM me)\n"
-    "👤 /bal — apna stats card\n"
-    "⚔️ /rob — kisi ko reply karke loot lo (10% tax, kabhi fail bhi)\n"
-    "🔪 /kill — 100–200 coins kamao, target ke 5% coins jal jayenge\n"
-    "🛡 /protect 1d (400) ya 2d (1000) — rob/kill se safety\n"
-    "🎁 /give — kisi ko coins do (10% tax)\n"
-    "🏆 /toprich — sabse ameer 10 log"
+    "🎁 /daily — 2000 coins + 50 XP every day (DM only)\n"
+    "👤 /bal — your stats card\n"
+    "⚔️ /rob — reply to someone to loot them (10% tax, can fail too)\n"
+    "🔪 /kill — earn 100–200 coins, 5% of the target's coins burn\n"
+    "🛡 /protect 1d (400) or 2d (1000) — safety from rob/kill\n"
+    "🎁 /give — give coins to someone (10% tax)\n"
+    "🏆 /toprich — the 10 richest players"
 )
 
 _INFO = {"features": FEATURES_TEXT, "games": GAMES_TEXT, "economy": ECONOMY_TEXT}
@@ -84,10 +85,10 @@ async def cmd_start(message: Message, bot: Bot) -> None:
     u = await db.get_or_create_user(user.id, user.username, user.first_name)
     me = await bot.get_me()
     text = (
-        "💙 Hieeee " + escape(user.first_name or "dost") + "! Main hu <b>" + BOT_NAME + "</b> — "
-        "chatting, gaming aur masti wali dost.\n\n"
-        "📊 <b>Tumhare stats:</b>\n" + stats_card(u) + "\n\n"
-        "👇 Option choose karo:"
+        "💙 Hieeee " + escape(user.first_name or "friend") + "! I'm <b>" + BOT_NAME + "</b> — "
+        "your buddy for chatting, gaming and fun.\n\n"
+        "📊 <b>Your stats:</b>\n" + stats_card(u) + "\n\n"
+        "👇 Choose an option:"
     )
     await message.answer(text, reply_markup=start_keyboard(me.username))
 
@@ -100,18 +101,18 @@ async def cmd_teach(message: Message, command: CommandObject) -> None:
     """
     settings = get_settings()
     if message.from_user is None or settings.admin_id == 0 or message.from_user.id != settings.admin_id:
-        await message.reply("Ye sirf mere owner ke liye hai 😌 tum bas baat karo mujhse!")
+        await message.reply("This is only for my owner 😌 you just chat with me!")
         return
     raw = (command.args or "").strip()
     if "=>" not in raw:
         await message.reply(
-            "📌 <b>Usage:</b> /teach &lt;sawal&gt; =&gt; &lt;jawab&gt;\n"
-            "Jaise: /teach tum khana khati ho =&gt; haan! biryani meri favourite hai 😋"
+            "📌 <b>Usage:</b> /teach &lt;question&gt; =&gt; &lt;answer&gt;\n"
+            "Example: /teach tum khana khati ho =&gt; haan! biryani meri favourite hai 😋"
         )
         return
     stimulus, response = [part.strip() for part in raw.split("=>", 1)]
     if not stimulus or not response:
-        await message.reply("📌 Sawal aur jawab dono likho: /teach &lt;sawal&gt; =&gt; &lt;jawab&gt;")
+        await message.reply("📌 Write both the question and the answer: /teach &lt;question&gt; =&gt; &lt;answer&gt;")
         return
     ok = await pairs.learn(
         message.chat.id, stimulus, response, source="teach",
@@ -119,11 +120,11 @@ async def cmd_teach(message: Message, command: CommandObject) -> None:
     )
     if ok:
         await message.reply(
-            "✅ <b>Seekh liya!</b>\n❓ " + escape(stimulus) + "\n💬 " + escape(response)
-            + "\n\n(Ab ye sawal bina LLM ke, seedha DB se jawab milega — global)"
+            "✅ <b>Learned!</b>\n❓ " + escape(stimulus) + "\n💬 " + escape(response)
+            + "\n\n(This question will now be answered straight from the DB, no LLM — global)"
         )
     else:
-        await message.reply("😬 Seekh nahi payi — sawal/jawab thoda chhota aur saaf rakho")
+        await message.reply("😬 Couldn't learn that — keep the question/answer a bit shorter and cleaner")
 
 
 @router.callback_query(F.data.startswith("info:"))
@@ -141,10 +142,10 @@ async def on_new_members(message: Message, bot: Bot) -> None:
     if not any(m.id == me.id for m in message.new_chat_members or []):
         return
     await message.answer(
-        "👀 Hii sabko! 💕 Main <b>" + BOT_NAME + "</b> aa gayi is group me.\n\n"
-        "💬 Chat ke liye mujhe tag karo ya mere message par reply karo\n"
-        "🎁 /daily se roz free coins (DM me)\n"
-        "💣 /bomb &lt;amount&gt; se group game shuru karo\n"
-        "⚔️ /rob aur /kill se economy ka maza lo\n"
-        "Chalo, masti shuru karein! 🎉"
+        "👀 Hii everyone! 💕 I'm <b>" + BOT_NAME + "</b>, just joined this group.\n\n"
+        "💬 To chat, tag me or reply to my message\n"
+        "🎁 Free coins every day with /daily (in DM)\n"
+        "💣 Start a group game with /bomb &lt;amount&gt;\n"
+        "⚔️ Enjoy the economy with /rob and /kill\n"
+        "Let's get the fun started! 🎉"
     )

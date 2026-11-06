@@ -249,6 +249,28 @@ async def kill_action(killer_id: int, target_id: int, reward: int, loss_percent:
 
 # ----------------------------------------------------------------- chats ----
 
+def _as_msg_list(raw) -> list:
+    """Normalise a stored `chats.messages` value into a list of dicts.
+
+    Rows written before the jsonb-codec fix were double-encoded — the
+    codec decoded them back to a plain string holding the JSON array
+    instead of a list. Decode strings (repeatedly, in case of multiple
+    encodings), then keep only dict entries, so readers never crash on
+    a legacy string entry.
+    """
+    value = raw
+    for _ in range(3):
+        if not isinstance(value, str):
+            break
+        try:
+            value = json.loads(value)
+        except ValueError:
+            return []
+    if not isinstance(value, list):
+        return []
+    return [m for m in value if isinstance(m, dict)]
+
+
 async def get_history(chat_id: int, user_id: int):
     """Returns (summary, last messages) for one (chat, user) pair.
 
@@ -265,7 +287,7 @@ async def get_history(chat_id: int, user_id: int):
         return ("", [])
     cutoff = datetime.now(timezone.utc).timestamp() - HISTORY_RETENTION_HOURS * 3600
     fresh = [
-        m for m in (row["messages"] or [])
+        m for m in _as_msg_list(row["messages"])
         if float(m.get("ts") or 0) >= cutoff
     ]
     return (row["summary"] or "", fresh)
@@ -281,7 +303,7 @@ async def append_message(chat_id: int, user_id: int, role: str, text: str, keep:
                 "SELECT messages FROM chats WHERE chat_id = $1 AND user_id = $2 FOR UPDATE",
                 chat_id, user_id,
             )
-            msgs = list(row["messages"]) if row and row["messages"] else []
+            msgs = _as_msg_list(row["messages"]) if row else []
             msgs.append({
                 "role": role,
                 "text": text,
@@ -295,7 +317,7 @@ async def append_message(chat_id: int, user_id: int, role: str, text: str, keep:
                 "VALUES ($1, $2, $3::jsonb, now()) "
                 "ON CONFLICT (chat_id, user_id) DO UPDATE SET "
                 "messages = EXCLUDED.messages, updated_at = now()",
-                chat_id, user_id, json.dumps(msgs),
+                chat_id, user_id, msgs,
             )
     return dropped
 
@@ -321,13 +343,13 @@ async def cleanup_old_messages(hours: int = HISTORY_RETENTION_HOURS) -> int:
     async with pool().acquire() as conn:
         rows = await conn.fetch("SELECT chat_id, user_id, messages FROM chats")
         for row in rows:
-            msgs = list(row["messages"] or [])
+            msgs = _as_msg_list(row["messages"])
             fresh = [m for m in msgs if float(m.get("ts") or 0) >= cutoff]
             if len(fresh) < len(msgs):
                 pruned += len(msgs) - len(fresh)
                 await conn.execute(
                     "UPDATE chats SET messages = $3::jsonb WHERE chat_id = $1 AND user_id = $2",
-                    row["chat_id"], row["user_id"], json.dumps(fresh),
+                    row["chat_id"], row["user_id"], fresh,
                 )
     if pruned:
         log.info("pruned %d stored chat messages older than %dh", pruned, hours)

@@ -63,11 +63,11 @@ async def cmd_bal(message: Message) -> None:
     target = await _resolve_target(message, "")
     if target and target[0] != message.from_user.id:
         row = await db.get_or_create_user(target[0], None, target[1])
-        await message.reply("👤 " + mention(target[0], target[1]) + " ke stats:\n" + stats_card(row))
+        await message.reply("👤 " + mention(target[0], target[1]) + "'s stats:\n" + stats_card(row))
         return
     row = await _self_row(message)
     rank = await db.get_rank(row["user_id"])
-    await message.reply("👤 <b>Tumhare stats:</b>\n" + stats_card(row) + "\n🏆 Rank: <b>#" + str(rank) + "</b>")
+    await message.reply("👤 <b>Your stats:</b>\n" + stats_card(row) + "\n🏆 Rank: <b>#" + str(rank) + "</b>")
 
 
 @router.message(Command("daily"))
@@ -75,16 +75,16 @@ async def cmd_daily(message: Message, bot: Bot) -> None:
     if message.chat.type != "private":
         me = await bot.get_me()
         kb = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="🎁 DM me daily lo",
+            [InlineKeyboardButton(text="🎁 Get daily in DM",
                                   url="https://t.me/" + me.username + "?start=daily")]
         ])
-        await message.reply("🎁 Daily reward <b>DM me milega</b> — wahan /daily likho!", reply_markup=kb)
+        await message.reply("🎁 The daily reward is in <b>DM</b> — send /daily there!", reply_markup=kb)
         return
     row = await _self_row(message)
     if await db.try_claim_daily(row["user_id"], DAILY_COINS, DAILY_XP):
         fresh = await db.get_user(row["user_id"])
         await message.answer(
-            "🎁 Daily mil gaya! <b>+" + str(DAILY_COINS) + " coins</b>, +" + str(DAILY_XP) + " XP\n"
+            "🎁 Daily claimed! <b>+" + str(DAILY_COINS) + " coins</b>, +" + str(DAILY_XP) + " XP\n"
             "💰 Balance: <b>" + "{:,}".format(int(fresh["coins"])) + "</b>"
         )
     else:
@@ -96,8 +96,8 @@ async def cmd_daily(message: Message, bot: Bot) -> None:
             delta = remaining - datetime.now(timezone.utc)
             hours = int(delta.total_seconds() // 3600)
             mins = int((delta.total_seconds() % 3600) // 60)
-            wait = " (" + str(hours) + "h " + str(mins) + "m baaki hai)"
-        await message.answer("⏳ Aaj ka daily le liya tumne! Kal phir aana" + wait)
+            wait = " (" + str(hours) + "h " + str(mins) + "m left)"
+        await message.answer("⏳ You've already claimed today's daily! Come back tomorrow" + wait)
 
 
 @router.message(Command("rob"))
@@ -105,36 +105,37 @@ async def cmd_rob(message: Message, command: CommandObject) -> None:
     robber = await _self_row(message)
     target = await _resolve_target(message, command.args or "")
     if target is None:
-        await message.reply("⚔️ Kisi ke message par reply karke /rob likho, ya /rob @username")
+        await message.reply("⚔️ Reply to someone's message with /rob, or use /rob @username")
         return
     target_id, target_name = target
     if target_id == robber["user_id"]:
-        await message.reply("Khud ko rob karoge? 😂 Kuch aur karo")
+        await message.reply("Rob yourself? 😂 Try something else")
         return
     victim = await db.get_or_create_user(target_id, None, target_name)
     if db.is_protected(victim):
-        await message.reply("🛡 " + mention(target_id, target_name) + " protected hai — rob fail gaya!")
+        await message.reply("🛡 " + mention(target_id, target_name) + " is protected — the rob failed!")
         return
     if int(victim["coins"]) < 100:
-        await message.reply("😅 " + mention(target_id, target_name) + " ke paas 100 coins bhi nahi hain — chhod do bechare ko")
+        await message.reply("😅 " + mention(target_id, target_name) + " doesn't even have 100 coins — let them be")
         return
     if random.random() < 0.6:
         steal = min(ROB_CAP, max(50, int(int(victim["coins"]) * random.uniform(0.05, 0.15))))
         ok, credited = await db.transfer(target_id, robber["user_id"], steal, tax_percent=ROB_TAX)
         if ok:
             await message.reply(
-                "💰 Rob successful! " + mention(target_id, target_name) + " se <b>" + "{:,}".format(steal)
-                + "</b> coins loote, tax ke baad tumhe <b>" + "{:,}".format(credited) + "</b> mile ⚔️"
+                "💰 Rob successful! You looted <b>" + "{:,}".format(steal)
+                + "</b> coins from " + mention(target_id, target_name)
+                + ", after tax you got <b>" + "{:,}".format(credited) + "</b> ⚔️"
             )
         else:
-            await message.reply("Rob beech me atak gaya 😬 Phir try karo")
+            await message.reply("The rob got stuck midway 😬 Try again")
     else:
         fine = min(int(robber["coins"]), 100)
         if fine > 0:
             await db.transfer(robber["user_id"], target_id, fine, tax_percent=0.0)
         await message.reply(
-            "🚨 Pakde gaye! Rob fail — " + "{:,}".format(fine) + " coins fine " +
-            mention(target_id, target_name) + " ko gaya 😭"
+            "🚨 Caught! Rob failed — " + "{:,}".format(fine) + " coins fine went to " +
+            mention(target_id, target_name) + " 😭"
         )
 
 
@@ -143,22 +144,22 @@ async def cmd_kill(message: Message, command: CommandObject) -> None:
     killer = await _self_row(message)
     target = await _resolve_target(message, command.args or "")
     if target is None:
-        await message.reply("🔪 Kisi ke message par reply karke /kill likho, ya /kill @username")
+        await message.reply("🔪 Reply to someone's message with /kill, or use /kill @username")
         return
     target_id, target_name = target
     if target_id == killer["user_id"]:
-        await message.reply("Khud ko? 😂 Nahi chalega")
+        await message.reply("Yourself? 😂 Not happening")
         return
     victim = await db.get_or_create_user(target_id, None, target_name)
     if db.is_protected(victim):
-        await message.reply("🛡 " + mention(target_id, target_name) + " protected hai — kill block ho gaya!")
+        await message.reply("🛡 " + mention(target_id, target_name) + " is protected — the kill was blocked!")
         return
     reward = random.randint(100, 200)
     loss = await db.kill_action(killer["user_id"], target_id, reward, KILL_LOSS_PERCENT)
     fresh = await db.get_user(killer["user_id"])
     await message.reply(
-        "🔪💥 " + mention(target_id, target_name) + " mara gaya!\n"
-        "Tumhe <b>+" + str(reward) + " coins</b> mile, uske <b>" + "{:,}".format(loss) + "</b> coins jal gaye.\n"
+        "🔪💥 " + mention(target_id, target_name) + " got killed!\n"
+        "You earned <b>+" + str(reward) + " coins</b>, and <b>" + "{:,}".format(loss) + "</b> of their coins burned.\n"
         "Total kills: <b>" + str(fresh["kills"]) + "</b>"
     )
 
@@ -169,18 +170,18 @@ async def cmd_protect(message: Message, command: CommandObject) -> None:
     arg = (command.args or "").strip().lower().rstrip("d")
     days = int(arg) if arg.isdigit() else 0
     if days not in PROTECT_COSTS:
-        await message.reply("🛡 Usage: /protect 1d (400 coins) ya /protect 2d (1000 coins)")
+        await message.reply("🛡 Usage: /protect 1d (400 coins) or /protect 2d (1000 coins)")
         return
     cost = PROTECT_COSTS[days]
     if await db.buy_protection(row["user_id"], days, cost):
         await message.reply(
-            "🛡 Protection ON! <b>" + str(days) + " din</b> tak koi rob/kill nahi kar sakta. "
-            "(" + str(cost) + " coins lage)"
+            "🛡 Protection ON! For <b>" + str(days) + (" day" if days == 1 else " days")
+            + "</b> nobody can rob/kill you. (" + str(cost) + " coins charged)"
         )
     else:
         await message.reply(
-            "😅 Coins kam hain — " + str(cost) + " chahiye, tumhare paas " +
-            "{:,}".format(int(row["coins"])) + " hain. /daily se kamao!"
+            "😅 Not enough coins — you need " + str(cost) + ", you have " +
+            "{:,}".format(int(row["coins"])) + ". Earn more with /daily!"
         )
 
 
@@ -198,26 +199,26 @@ async def cmd_give(message: Message, command: CommandObject) -> None:
         target = await _resolve_target(message, args[0])
         amount = int(args[1])
     if target is None or amount is None:
-        await message.reply("🎁 Usage: kisi ko reply karke /give &lt;amount&gt;, ya /give @username &lt;amount&gt;")
+        await message.reply("🎁 Usage: reply to someone with /give &lt;amount&gt;, or /give @username &lt;amount&gt;")
         return
     target_id, target_name = target
     if target_id == giver["user_id"]:
-        await message.reply("Khud ko give karke kya milega 😂")
+        await message.reply("Giving to yourself? What's the point 😂")
         return
     if amount <= 0:
-        await message.reply("Amount toh sahi do 😅")
+        await message.reply("Give a proper amount 😅")
         return
     await db.get_or_create_user(target_id, None, target_name)
     ok, credited = await db.transfer(giver["user_id"], target_id, amount, tax_percent=GIVE_TAX)
     if ok:
         tax = amount - credited
         await message.reply(
-            "🎁 " + mention(target_id, target_name) + " ko <b>" + "{:,}".format(credited) +
-            "</b> coins mile (tax " + "{:,}".format(tax) + " kata)"
+            "🎁 " + mention(target_id, target_name) + " received <b>" + "{:,}".format(credited) +
+            "</b> coins (tax " + "{:,}".format(tax) + " deducted)"
         )
     else:
         await message.reply(
-            "😅 Balance kam hai — tumhare paas " + "{:,}".format(int(giver["coins"])) + " coins hain"
+            "😅 Balance too low — you have " + "{:,}".format(int(giver["coins"])) + " coins"
         )
 
 
@@ -225,9 +226,9 @@ async def cmd_give(message: Message, command: CommandObject) -> None:
 async def cmd_toprich(message: Message) -> None:
     rows = await db.top_rich(10)
     if not rows:
-        await message.reply("Abhi koi ameer nahi hai 😅 /daily se shuru karo!")
+        await message.reply("Nobody's rich yet 😅 Start with /daily!")
         return
-    lines = ["🏆 <b>Sabse Ameer Top 10</b>\n"]
+    lines = ["🏆 <b>Top 10 Richest</b>\n"]
     for i, r in enumerate(rows, start=1):
         name = r.get("first_name") or r.get("username") or "User"
         lines.append(
