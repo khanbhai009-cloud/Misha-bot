@@ -142,7 +142,13 @@ async def _call_openai_compatible(url: str, api_key: str, model: str,
     headers = {"Content-Type": "application/json", "Authorization": "Bearer " + api_key}
     if extra_headers:
         headers.update(extra_headers)
-    resp = await _get_client().post(url, json=payload, headers=headers)
+    # Per-attempt timeout (LLM_PROVIDER_TIMEOUT_SECONDS, default 10s):
+    # one hanging provider must never stall a reply for the shared
+    # client's full 25s — the chain rotates when this fires.
+    resp = await _get_client().post(
+        url, json=payload, headers=headers,
+        timeout=get_settings().llm_provider_timeout_seconds,
+    )
     if resp.status_code != 200:
         if _is_quota(resp.status_code, resp.text):
             raise _QuotaHit("http " + str(resp.status_code) + " from " + url)
@@ -191,6 +197,7 @@ async def _generate(prompt_text: str, system_text: str, max_tokens: int) -> str 
         for name in _provider_order():
             if _in_cooldown(name):
                 continue
+            started = time.monotonic()
             try:
                 text = await _call_provider(name, prompt_text, system_text, max_tokens)
             except _QuotaHit:
@@ -201,7 +208,12 @@ async def _generate(prompt_text: str, system_text: str, max_tokens: int) -> str 
                 log.exception("provider %s failed — trying next", name)
                 continue
             if text:
+                log.info(
+                    "provider %s answered in %.1fs",
+                    name, time.monotonic() - started,
+                )
                 return text
+            log.info("provider %s returned empty — rotating", name)
     return None
 
 
@@ -247,7 +259,7 @@ async def chat_reply(summary: str, history: list, user_text: str, user_name: str
     lines.append((user_name or "User") + ": " + user_text)
     lines.append("Ab tumhara jawab (sirf JSON):")
     try:
-        raw = await _generate("\n".join(lines), PERSONA_PROMPT, max_tokens=160)
+        raw = await _generate("\n".join(lines), PERSONA_PROMPT, max_tokens=500)
     except Exception:
         log.exception("LLM chain failed")
         return _fallback()
@@ -272,7 +284,7 @@ async def summarize(old_summary: str, dropped: list) -> str:
         'Sirf JSON do: {"summary": "..."}'
     )
     try:
-        raw = await _generate(prompt, "You compress chat memory into tiny summaries.", max_tokens=120)
+        raw = await _generate(prompt, "You compress chat memory into tiny summaries.", max_tokens=500)
         if raw:
             data = json.loads(re.sub(r"^```[a-zA-Z]*\s*|\s*```$", "", raw.strip()))
             summary = str(data.get("summary") or "").strip()

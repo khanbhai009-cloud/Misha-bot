@@ -19,6 +19,7 @@ class Settings:
     groq_model: str = "openai/gpt-oss-120b"
     llm_provider_order: str = "nvidia,openrouter,groq"
     llm_cooldown_minutes: int = 60
+    llm_provider_timeout_seconds: float = 10.0
     admin_id: int = 0
     admin_panel_key: str = ""
     llm_max_parallel: int = 10
@@ -43,6 +44,9 @@ class Settings:
                 "LLM_PROVIDER_ORDER", "nvidia,openrouter,groq"
             ),
             llm_cooldown_minutes=int(os.getenv("LLM_COOLDOWN_MINUTES", "60") or 60),
+            llm_provider_timeout_seconds=float(
+                os.getenv("LLM_PROVIDER_TIMEOUT_SECONDS", "10") or 10
+            ),
             admin_id=int(os.getenv("ADMIN_ID", "0") or 0),
             admin_panel_key=os.getenv("ADMIN_PANEL_KEY", ""),
             llm_max_parallel=int(os.getenv("LLM_MAX_PARALLEL", "10") or 10),

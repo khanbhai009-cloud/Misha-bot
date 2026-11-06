@@ -97,7 +97,10 @@ async def _respond(message: Message, bot: Bot, user_text: str, sticker_boost: fl
             log.exception("pairs lookup failed — falling through to LLM")
             hit = None
         if hit:
+            log.info("pair hit (%s) in chat %s", hit.get("via", "exact"), chat_id)
             result = {"reply": hit["reply"], "mood": hit["mood"], "sticker": False}
+        else:
+            log.info("pair miss -> LLM in chat %s", chat_id)
 
     # 2) LLM on a miss — and the fresh exchange is learned back ('auto'),
     #    so the same sawal is free next time. Quota-fallback lines are

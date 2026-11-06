@@ -236,15 +236,19 @@ async def lookup(chat_id: int, text: str) -> dict | None:
     over the scope's stimuli (same scope order) -> pg_trgm fuzzy as a
     last resort. Among up to 3 stored responses for the matched
     stimulus, pick weighted by hits (popular answers surface more),
-    and count the hit.
+    and count the hit. The returned dict also carries a "via" tag
+    ("exact" | "rapidfuzz" | "pg_trgm") naming which layer matched —
+    for logging only; reply behaviour is unchanged.
     """
     norm = normalize(text)
     if not norm:
         return None
+    via = "exact"
     candidates = await _fetch_candidates(_chat_scope(chat_id), norm)
     if not candidates:
         candidates = await _fetch_candidates(GLOBAL_SCOPE, norm)
     if not candidates:
+        via = "rapidfuzz"
         for scope in (_chat_scope(chat_id), GLOBAL_SCOPE):
             stimulus = await _rf_best_stimulus(scope, norm)
             if stimulus:
@@ -258,13 +262,14 @@ async def lookup(chat_id: int, text: str) -> dict | None:
         if fuzzy is None:
             return None
         candidates = [fuzzy]
+        via = "pg_trgm"
     weights = [int(c.get("hits") or 0) + 1 for c in candidates]
     chosen = random.choices(candidates, weights=weights, k=1)[0]
     async with db.pool().acquire() as conn:
         await conn.execute(
             "UPDATE learned_pairs SET hits = hits + 1 WHERE id = $1", chosen["id"]
         )
-    return {"reply": chosen["response"], "mood": chosen.get("mood") or "happy"}
+    return {"reply": chosen["response"], "mood": chosen.get("mood") or "happy", "via": via}
 
 
 async def learn(chat_id, stimulus_text: str, response_text: str, source: str = "auto",
