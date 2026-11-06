@@ -76,8 +76,14 @@ async def _update_summary(chat_id: int, user_id: int, old_summary: str, dropped:
         log.exception("summary update failed")
 
 
-async def _respond(message: Message, bot: Bot, user_text: str, sticker_boost: float = 0.0) -> None:
-    """One full chat exchange: memory -> LLM -> text/sticker out."""
+async def _respond(message: Message, bot: Bot, user_text: str, sticker_boost: float = 0.0,
+                   sticker_mood: str | None = None) -> None:
+    """One full chat exchange: memory -> LLM -> text/sticker out.
+
+    `sticker_mood` is set only when the trigger was the user's own
+    sticker: the mood mapped from that sticker's emoji, so a reply
+    sticker can mirror it (see the send block below).
+    """
     user = message.from_user
     chat_id = message.chat.id
     is_group = message.chat.type != "private"
@@ -196,7 +202,16 @@ async def _respond(message: Message, bot: Bot, user_text: str, sticker_boost: fl
             log.exception("harvested sticker pick failed")
             sticker_file = None
     if sticker_file is None and wants_sticker:
-        sticker_file = await stickers.pick_for_mood(mood)
+        # Answering a user's sticker: mirror the mood of THEIR sticker
+        # first (emoji -> mood, stickers.mood_for_emoji); only when
+        # that pool is empty fall back to the LLM's mood for the reply.
+        pool_moods = [mood]
+        if sticker_mood and sticker_mood != mood:
+            pool_moods.insert(0, sticker_mood)
+        for pool_mood in pool_moods:
+            sticker_file = await stickers.pick_for_mood(pool_mood)
+            if sticker_file is not None:
+                break
 
     if sticker_file:
         # A chosen sticker IS the whole visible reply — never text with
@@ -206,6 +221,21 @@ async def _respond(message: Message, bot: Bot, user_text: str, sticker_boost: fl
         return
 
     await bot.send_message(chat_id, reply_text, reply_parameters=reply_params)
+
+    # Follow-up sticker (owner's design): when a text reply's mood is
+    # unmistakable — a STRONG mood (love/laugh/sad/angry/shy) with a
+    # non-empty pool — a matching sticker sometimes lands right after
+    # the text (0.35 roll). happy/bored never trigger this: too common
+    # to mean anything. This is the ONLY text+sticker sequence left;
+    # every other sticker send above stays sticker-only.
+    if mood in stickers.STRONG_MOODS and random.random() < stickers.AFTER_TEXT_STICKER_CHANCE:
+        try:
+            follow_file = await stickers.pick_for_mood(mood)
+        except Exception:
+            log.exception("follow-up sticker pick failed")
+            follow_file = None
+        if follow_file:
+            await bot.send_sticker(chat_id, follow_file)
 
 
 @router.message(F.text)
@@ -348,5 +378,6 @@ async def _handle_sticker(message: Message, bot: Bot) -> None:
     emoji = message.sticker.emoji or "🙂"
     async with _chat_lock(message.chat.id):
         await _respond(
-            message, bot, "[user ne ek sticker bheja: " + emoji + "]", sticker_boost=0.45
+            message, bot, "[user ne ek sticker bheja: " + emoji + "]",
+            sticker_boost=0.45, sticker_mood=stickers.mood_for_emoji(emoji),
         )

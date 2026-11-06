@@ -26,3 +26,45 @@ async def pick_for_mood(mood: str):
     if mood not in MOODS:
         mood = "happy"
     return await db.random_sticker(mood)
+
+
+# ---------------------------------------------------------------------------
+# Emoji -> mood. Every Telegram sticker carries an emoji, so a user's
+# sticker can be answered in kind: the reply sticker is picked from the
+# pool of the SAME mood before the LLM's mood is tried (see the send
+# block in handlers/chat.py). Judgement calls: 😊 reads shy on this
+# persona (her seed intro line pairs it with the shy mood), 🥺 reads
+# sad, 🙄 reads bored. Anything unmapped defaults to "happy".
+EMOJI_MOODS = {
+    "😍": "love", "🥰": "love", "❤️": "love", "💕": "love", "💖": "love",
+    "😘": "love", "💋": "love", "🫶": "love",
+    "😂": "laugh", "🤣": "laugh", "😆": "laugh", "😹": "laugh",
+    "🙈": "shy", "😳": "shy", "😊": "shy", "☺️": "shy", "🌸": "shy",
+    "😢": "sad", "😭": "sad", "😔": "sad", "💔": "sad", "🥺": "sad",
+    "😡": "angry", "🤬": "angry", "😠": "angry", "💢": "angry",
+    "🥱": "bored", "😴": "bored", "😐": "bored", "😑": "bored", "🙄": "bored",
+    "😄": "happy", "😃": "happy", "✨": "happy", "🎉": "happy",
+    "👍": "happy", "🔥": "happy", "💯": "happy",
+}
+
+
+def mood_for_emoji(emoji: str) -> str:
+    """Persona mood for a sticker's emoji; unmapped emoji -> "happy".
+
+    Compared with the variation selector (U+FE0F) stripped on both
+    sides, so "❤" and "❤️" land on the same mood.
+    """
+    key = (emoji or "").strip().replace("\ufe0f", "")
+    if not key:
+        return "happy"
+    for known, mood in EMOJI_MOODS.items():
+        if known.replace("\ufe0f", "") == key:
+            return mood
+    return "happy"
+
+
+# Moods strong enough that a text reply carrying one may be followed
+# by a matching sticker (the follow-up gate in handlers/chat.py).
+# happy and bored are too common to mean anything — they never fire it.
+STRONG_MOODS = ("love", "laugh", "sad", "angry", "shy")
+AFTER_TEXT_STICKER_CHANCE = 0.35
