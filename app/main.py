@@ -28,7 +28,7 @@ from fastapi.responses import JSONResponse
 from . import admin as admin_panel
 from . import db, harvest, pairs
 from .config import get_settings
-from .handlers import chat, common, economy, games, own
+from .handlers import business, chat, common, economy, games, own
 
 logging.basicConfig(
     level=logging.INFO,
@@ -40,8 +40,13 @@ settings = get_settings()
 
 bot: Bot | None = None
 dp = Dispatcher()
-# Order matters: command routers first, free-chat router LAST (its text
-# handler would otherwise swallow commands before they are routed).
+# Order matters: the Telegram Business router goes FIRST — it claims
+# every message carrying a business_connection_id before the command
+# routers can see it (no economy/games/commands ever run inside the
+# owner's personal business chats). Then the command routers, and the
+# free-chat router LAST (its text handler would otherwise swallow
+# commands before they are routed).
+dp.include_router(business.router)
 dp.include_router(common.router)
 dp.include_router(economy.router)
 dp.include_router(games.router)
@@ -168,6 +173,11 @@ async def lifespan(app: FastAPI):
             url=settings.webhook_base_url + "/webhook",
             secret_token=settings.webhook_secret or None,
             drop_pending_updates=True,
+            # Everything the dispatcher actually consumes. Naming the
+            # list explicitly is what guarantees business_connection
+            # updates arrive — Telegram's implicit default set is not
+            # documented to include them.
+            allowed_updates=["message", "callback_query", "business_connection"],
         )
         for _ in range(WORKER_COUNT):
             _workers.append(asyncio.create_task(_worker()))

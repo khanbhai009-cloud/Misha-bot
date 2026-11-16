@@ -66,6 +66,21 @@ CREATE TABLE IF NOT EXISTS emoji_settings (
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+-- Telegram Business connections (see app/handlers/business.py). The
+-- owner linked Misha to his personal Telegram account through
+-- Settings > Telegram Business > Chatbots; every business_connection
+-- update Telegram sends refreshes this row. Business chats are the
+-- owner's PERSONAL chats: they are answered with the persona, but
+-- nothing from them is ever learned, harvested or stored as history.
+CREATE TABLE IF NOT EXISTS business_connections (
+    connection_id TEXT PRIMARY KEY,
+    owner_user_id BIGINT NOT NULL,
+    user_chat_id  BIGINT,
+    is_enabled    BOOLEAN NOT NULL DEFAULT FALSE,
+    can_reply     BOOLEAN NOT NULL DEFAULT FALSE,
+    updated_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
 -- Sticker packs created for users via /own.
 CREATE TABLE IF NOT EXISTS user_packs (
     id         SERIAL PRIMARY KEY,

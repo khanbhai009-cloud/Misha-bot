@@ -452,6 +452,39 @@ async def remove_emoji_setting(emoji: str, kind: str) -> bool:
     return not status.endswith(" 0")
 
 
+# ------------------------------------------------- business connections ----
+
+async def upsert_business_connection(connection_id: str, owner_user_id: int,
+                                     user_chat_id, is_enabled: bool,
+                                     can_reply: bool) -> None:
+    """Store/refresh one Telegram Business connection (see
+    app/handlers/business.py). Telegram re-sends the full connection
+    state on every change, so an upsert on the latest values is the
+    whole sync — there is no partial-update path."""
+    async with pool().acquire() as conn:
+        await conn.execute(
+            "INSERT INTO business_connections "
+            "(connection_id, owner_user_id, user_chat_id, is_enabled, can_reply, updated_at) "
+            "VALUES ($1, $2, $3, $4, $5, now()) "
+            "ON CONFLICT (connection_id) DO UPDATE SET "
+            "owner_user_id = EXCLUDED.owner_user_id, "
+            "user_chat_id = EXCLUDED.user_chat_id, "
+            "is_enabled = EXCLUDED.is_enabled, "
+            "can_reply = EXCLUDED.can_reply, "
+            "updated_at = now()",
+            connection_id, owner_user_id, user_chat_id, is_enabled, can_reply,
+        )
+
+
+async def get_business_connection(connection_id: str) -> dict | None:
+    async with pool().acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT * FROM business_connections WHERE connection_id = $1",
+            connection_id,
+        )
+    return dict(row) if row else None
+
+
 # ----------------------------------------------------------------- packs ----
 
 async def get_user_packs(user_id: int) -> list:
