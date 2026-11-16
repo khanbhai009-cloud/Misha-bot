@@ -9,7 +9,7 @@ from aiogram import Bot, F, Router
 from aiogram.filters import Command, CommandObject, CommandStart
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
-from .. import db, pairs
+from .. import db, emojis, pairs
 from ..config import get_settings
 from ..persona import BOT_NAME
 
@@ -125,6 +125,121 @@ async def cmd_teach(message: Message, command: CommandObject) -> None:
         )
     else:
         await message.reply("😬 Couldn't learn that — keep the question/answer a bit shorter and cleaner")
+
+
+def _is_owner(message: Message) -> bool:
+    """The same admin check /teach uses (ADMIN_ID from the env)."""
+    settings = get_settings()
+    return (
+        message.from_user is not None
+        and settings.admin_id != 0
+        and message.from_user.id == settings.admin_id
+    )
+
+
+def _parse_emoji_args(command: CommandObject) -> list:
+    """Command args -> normalised, de-duplicated emoji list."""
+    found = []
+    for raw in emojis.split_emojis(command.args or ""):
+        emoji = emojis.normalize_emoji(raw)
+        if emoji and emoji not in found:
+            found.append(emoji)
+    return found
+
+
+async def _emoji_add_to_list(message: Message, command: CommandObject,
+                             kind: str, verb: str, effect: str) -> None:
+    """Shared body of /emojiban and /emojiadd."""
+    if not _is_owner(message):
+        await message.reply("This is only for my owner 😌 you just chat with me!")
+        return
+    found = _parse_emoji_args(command)
+    if not found:
+        await message.reply(
+            "📌 <b>Usage:</b> /" + ("emojiban" if kind == "banned" else "emojiadd")
+            + " &lt;emoji&gt; — e.g. /" + ("emojiban" if kind == "banned" else "emojiadd")
+            + " 😢 😡"
+        )
+        return
+    for emoji in found:
+        await db.set_emoji_setting(emoji, kind, message.from_user.id)
+    emojis.invalidate_cache()
+    await message.reply(verb + " <b>" + " ".join(found) + "</b>\n" + effect)
+
+
+async def _emoji_remove_from_list(message: Message, command: CommandObject,
+                                  kind: str, verb: str) -> None:
+    """Shared body of /emojiunban and /emojiremove."""
+    if not _is_owner(message):
+        await message.reply("This is only for my owner 😌 you just chat with me!")
+        return
+    found = _parse_emoji_args(command)
+    if not found:
+        await message.reply(
+            "📌 <b>Usage:</b> /" + ("emojiunban" if kind == "banned" else "emojiremove")
+            + " &lt;emoji&gt;"
+        )
+        return
+    removed, missing = [], []
+    for emoji in found:
+        if await db.remove_emoji_setting(emoji, kind):
+            removed.append(emoji)
+        else:
+            missing.append(emoji)
+    emojis.invalidate_cache()
+    lines = []
+    if removed:
+        lines.append(verb + " <b>" + " ".join(removed) + "</b>")
+    if missing:
+        lines.append("Not on the list: " + " ".join(missing))
+    await message.reply("\n".join(lines))
+
+
+@router.message(Command("emojiban"))
+async def cmd_emojiban(message: Message, command: CommandObject) -> None:
+    """Owner-only: ban emojis — Misha will never use them in chat."""
+    await _emoji_add_to_list(
+        message, command, "banned", "🚫 <b>Banned:</b>",
+        "Misha will never use these emojis again.",
+    )
+
+
+@router.message(Command("emojiadd"))
+async def cmd_emojiadd(message: Message, command: CommandObject) -> None:
+    """Owner-only: mark emojis as preferred — Misha uses them more."""
+    await _emoji_add_to_list(
+        message, command, "preferred", "💖 <b>Preferred:</b>",
+        "Misha will use these emojis more often.",
+    )
+
+
+@router.message(Command("emojiunban"))
+async def cmd_emojiunban(message: Message, command: CommandObject) -> None:
+    """Owner-only: take emojis off the banned list."""
+    await _emoji_remove_from_list(message, command, "banned", "✅ <b>Unbanned:</b>")
+
+
+@router.message(Command("emojiremove"))
+async def cmd_emojiremove(message: Message, command: CommandObject) -> None:
+    """Owner-only: take emojis off the preferred list."""
+    await _emoji_remove_from_list(message, command, "preferred", "✅ <b>Removed:</b>")
+
+
+@router.message(Command("emojilist"))
+async def cmd_emojilist(message: Message) -> None:
+    """Owner-only: show both emoji lists."""
+    if not _is_owner(message):
+        await message.reply("This is only for my owner 😌 you just chat with me!")
+        return
+    banned, preferred = await db.get_emoji_settings()
+    await message.reply(
+        "🎭 <b>Misha's emoji settings</b>\n\n"
+        "🚫 <b>Banned</b> (she never uses these): "
+        + (" ".join(banned) if banned else "— none —")
+        + "\n💖 <b>Preferred</b> (she uses these more): "
+        + (" ".join(preferred) if preferred else "— none —")
+        + "\n\nChange them with /emojiban, /emojiunban, /emojiadd, /emojiremove"
+    )
 
 
 @router.callback_query(F.data.startswith("info:"))

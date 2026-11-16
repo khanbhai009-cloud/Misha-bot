@@ -374,12 +374,32 @@ async def cleanup_old_messages(hours: int = HISTORY_RETENTION_HOURS) -> int:
 
 # -------------------------------------------------------------- stickers ----
 
-async def add_sticker(file_id: str, mood: str, added_by: int) -> None:
+async def get_sticker(file_id: str, file_unique_id: str | None = None) -> dict | None:
+    """One sticker-pool row matching either Telegram id, or None.
+
+    The dedup check behind stickers.save_sticker: file_id is unique
+    per bot, file_unique_id is stable across bots — a hit on either
+    means this sticker is already in the pool.
+    """
+    async with pool().acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT file_id, mood, file_unique_id FROM stickers "
+            "WHERE file_id = $1 "
+            "OR ($2::text IS NOT NULL AND file_unique_id = $2)",
+            file_id, file_unique_id,
+        )
+    return dict(row) if row else None
+
+
+async def add_sticker(file_id: str, mood: str, added_by: int,
+                      file_unique_id: str | None = None) -> None:
     async with pool().acquire() as conn:
         await conn.execute(
-            "INSERT INTO stickers (file_id, mood, added_by) VALUES ($1, $2, $3) "
-            "ON CONFLICT (file_id) DO UPDATE SET mood = EXCLUDED.mood",
-            file_id, mood, added_by,
+            "INSERT INTO stickers (file_id, mood, added_by, file_unique_id) "
+            "VALUES ($1, $2, $3, $4) "
+            "ON CONFLICT (file_id) DO UPDATE SET mood = EXCLUDED.mood, "
+            "file_unique_id = COALESCE(EXCLUDED.file_unique_id, stickers.file_unique_id)",
+            file_id, mood, added_by, file_unique_id,
         )
 
 
@@ -388,6 +408,48 @@ async def random_sticker(mood: str):
         return await conn.fetchval(
             "SELECT file_id FROM stickers WHERE mood = $1 ORDER BY random() LIMIT 1", mood
         )
+
+
+# ------------------------------------------------------- emoji settings ----
+
+async def get_emoji_settings() -> tuple:
+    """(banned, preferred) emoji lists from the owner's settings.
+
+    Rows come back in insertion order so /emojilist shows them the way
+    the owner added them.
+    """
+    async with pool().acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT emoji, kind FROM emoji_settings ORDER BY created_at, emoji"
+        )
+    banned = [r["emoji"] for r in rows if r["kind"] == "banned"]
+    preferred = [r["emoji"] for r in rows if r["kind"] == "preferred"]
+    return banned, preferred
+
+
+async def set_emoji_setting(emoji: str, kind: str, added_by: int) -> None:
+    """Put one emoji on exactly one list ('banned' XOR 'preferred').
+
+    Callers pass the emoji already normalised (see
+    emojis.normalize_emoji), so ❤ and ❤️ are one row.
+    """
+    async with pool().acquire() as conn:
+        await conn.execute(
+            "INSERT INTO emoji_settings (emoji, kind, added_by) VALUES ($1, $2, $3) "
+            "ON CONFLICT (emoji) DO UPDATE SET kind = EXCLUDED.kind, "
+            "added_by = EXCLUDED.added_by",
+            emoji, kind, added_by,
+        )
+
+
+async def remove_emoji_setting(emoji: str, kind: str) -> bool:
+    """Remove one emoji from one list. True when a row was deleted."""
+    async with pool().acquire() as conn:
+        status = await conn.execute(
+            "DELETE FROM emoji_settings WHERE emoji = $1 AND kind = $2",
+            emoji, kind,
+        )
+    return not status.endswith(" 0")
 
 
 # ----------------------------------------------------------------- packs ----

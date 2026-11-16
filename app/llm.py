@@ -37,6 +37,7 @@ import time
 
 import httpx
 
+from . import emojis
 from .config import get_settings
 from .gender import gender_fact_line
 from .persona import FALLBACK_REPLIES, MOODS, PERSONA_PROMPT
@@ -249,8 +250,21 @@ def _parse(raw: str) -> dict:
     return {"reply": reply[:500], "mood": mood, "sticker": bool(data.get("sticker"))}
 
 
+def _system_prompt(emoji_banned: list | None, emoji_preferred: list | None) -> str:
+    """PERSONA_PROMPT plus the owner's emoji rules (see app/emojis.py).
+
+    With both lists empty the prompt is byte-identical to PERSONA_PROMPT.
+    """
+    extra = emojis.prompt_lines(emoji_banned or [], emoji_preferred or [])
+    if not extra:
+        return PERSONA_PROMPT
+    return PERSONA_PROMPT + "\n\n" + "\n".join(extra)
+
+
 async def chat_reply(summary: str, history: list, user_text: str, user_name: str = "",
-                     gender: str | None = None, extra_context: list | None = None) -> dict:
+                     gender: str | None = None, extra_context: list | None = None,
+                     emoji_banned: list | None = None,
+                     emoji_preferred: list | None = None) -> dict:
     """One persona reply for one user message. Never raises.
 
     `gender` is the code-detected user gender ('M'/'F'/None, see
@@ -267,6 +281,11 @@ async def chat_reply(summary: str, history: list, user_text: str, user_name: str
     it would stamp the current speaker's name on every line. When
     extra_context is None/empty the prompt is byte-identical to the
     DM form.
+
+    `emoji_banned` / `emoji_preferred` are the owner's in-Telegram
+    emoji settings (app/emojis.py): they are appended to the system
+    prompt as rules, and banned emojis are additionally stripped from
+    the parsed reply so the ban holds even when the model slips.
     """
     lines = []
     fact = gender_fact_line(gender)
@@ -283,13 +302,24 @@ async def chat_reply(summary: str, history: list, user_text: str, user_name: str
     lines.append((user_name or "User") + ": " + user_text)
     lines.append("Ab tumhara jawab (sirf JSON):")
     try:
-        raw = await _generate("\n".join(lines), PERSONA_PROMPT, max_tokens=1000)
+        raw = await _generate(
+            "\n".join(lines), _system_prompt(emoji_banned, emoji_preferred),
+            max_tokens=1000,
+        )
     except Exception:
         log.exception("LLM chain failed")
         return _fallback()
     if not raw:
         return _fallback()
-    return _parse(raw)
+    result = _parse(raw)
+    # Hard guarantee behind the prompt rule: a banned emoji never
+    # leaves in an LLM reply, even when the model used one anyway.
+    if emoji_banned:
+        cleaned = emojis.strip_banned(result["reply"], emoji_banned)
+        if not cleaned:
+            return _fallback()
+        result["reply"] = cleaned
+    return result
 
 
 async def summarize(old_summary: str, dropped: list) -> str:

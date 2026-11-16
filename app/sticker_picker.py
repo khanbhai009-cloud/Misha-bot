@@ -39,7 +39,8 @@ MOOD_EMOJI = {
     "bored": "🥱",
 }
 
-# token -> {"file_id": str, "expires": monotonic deadline}
+# token -> {"file_id": str, "file_unique_id": str | None,
+#           "expires": monotonic deadline}
 _pending: dict = {}
 
 
@@ -49,7 +50,7 @@ def _purge_expired(now: float | None = None) -> None:
         _pending.pop(token, None)
 
 
-def stash(file_id: str) -> str:
+def stash(file_id: str, file_unique_id: str | None = None) -> str:
     """Remember a sticker awaiting a mood tap; returns its token."""
     _purge_expired()
     while len(_pending) >= _MAX_PENDING:
@@ -57,19 +58,28 @@ def stash(file_id: str) -> str:
     token = secrets.token_hex(4)
     while token in _pending:
         token = secrets.token_hex(4)
-    _pending[token] = {"file_id": file_id, "expires": time.monotonic() + TTL_SECONDS}
+    _pending[token] = {
+        "file_id": file_id,
+        "file_unique_id": file_unique_id,
+        "expires": time.monotonic() + TTL_SECONDS,
+    }
     return token
 
 
-def resolve(token: str) -> str | None:
-    """Pop a pending entry and return its file_id.
+def resolve_entry(token: str) -> dict | None:
+    """Pop a pending entry and return it (file_id + file_unique_id).
 
     One-shot: a second resolve of the same token returns None. None
     also means the token was unknown or had expired — the caller
     cannot (and need not) tell the two apart.
     """
     _purge_expired()
-    entry = _pending.pop(token, None)
+    return _pending.pop(token, None)
+
+
+def resolve(token: str) -> str | None:
+    """Pop a pending entry and return just its file_id."""
+    entry = resolve_entry(token)
     return entry["file_id"] if entry else None
 
 

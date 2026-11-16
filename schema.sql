@@ -50,6 +50,22 @@ CREATE TABLE IF NOT EXISTS stickers (
 );
 CREATE INDEX IF NOT EXISTS idx_stickers_mood ON stickers (mood);
 
+-- Sticker dedup also matches on Telegram's cross-bot unique id when a
+-- save path provides one (file_id alone is only unique per bot).
+ALTER TABLE stickers ADD COLUMN IF NOT EXISTS file_unique_id TEXT;
+
+-- Owner-controlled emoji preferences for the persona (see app/emojis.py).
+-- kind is 'banned' (Misha never uses it) or 'preferred' (she uses it
+-- more). The emoji itself is the primary key, so an emoji lives on
+-- exactly one list at a time. Managed from inside Telegram with
+-- /emojiban, /emojiunban, /emojiadd, /emojiremove, /emojilist.
+CREATE TABLE IF NOT EXISTS emoji_settings (
+    emoji      TEXT PRIMARY KEY,
+    kind       TEXT NOT NULL,
+    added_by   BIGINT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
 -- Sticker packs created for users via /own.
 CREATE TABLE IF NOT EXISTS user_packs (
     id         SERIAL PRIMARY KEY,

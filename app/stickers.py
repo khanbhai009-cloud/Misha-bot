@@ -17,8 +17,26 @@ def is_valid_mood(text: str) -> bool:
     return bool(text) and text.strip().lower() in MOODS
 
 
-async def save_sticker(file_id: str, mood: str, added_by: int) -> None:
-    await db.add_sticker(file_id, mood.strip().lower(), added_by)
+async def find_sticker(file_id: str, file_unique_id: str | None = None) -> dict | None:
+    """The pool row for this sticker, or None when it is not saved yet."""
+    return await db.get_sticker(file_id, file_unique_id)
+
+
+async def save_sticker(file_id: str, mood: str, added_by: int,
+                       file_unique_id: str | None = None) -> tuple:
+    """Save one sticker to the pool, deduplicated.
+
+    Returns ("saved", mood) for a fresh save, or ("exists", mood) when
+    the same sticker (matched on file_id or file_unique_id) is already
+    in the pool — nothing is written then, and the caller can tell the
+    owner it is already saved (under the mood reported back).
+    """
+    mood = mood.strip().lower()
+    existing = await db.get_sticker(file_id, file_unique_id)
+    if existing is not None:
+        return ("exists", existing["mood"])
+    await db.add_sticker(file_id, mood, added_by, file_unique_id)
+    return ("saved", mood)
 
 
 async def pick_for_mood(mood: str):

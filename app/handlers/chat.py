@@ -20,7 +20,7 @@ import random
 from aiogram import Bot, F, Router
 from aiogram.types import CallbackQuery, Message, ReplyParameters
 
-from .. import db, gender, harvest, llm, pairs, sticker_picker, stickers, voice
+from .. import db, emojis, gender, harvest, llm, pairs, sticker_picker, stickers, voice
 from ..config import get_settings
 from ..persona import BOT_NAME, FALLBACK_REPLIES, MOODS
 
@@ -89,6 +89,16 @@ async def _respond(message: Message, bot: Bot, user_text: str, sticker_boost: fl
     is_group = message.chat.type != "private"
 
     user_row = await db.get_or_create_user(user.id, user.username, user.first_name)
+
+    # Owner's emoji settings (app/emojis.py): banned ones are stripped
+    # from whatever reply goes out below — learned pairs included —
+    # and both lists ride into the LLM prompt on a miss.
+    try:
+        emoji_banned, emoji_preferred = await emojis.get_settings_cached()
+    except Exception:
+        log.exception("emoji settings fetch failed — continuing without them")
+        emoji_banned, emoji_preferred = [], []
+
     summary, history = await db.get_history(chat_id, user.id)
     transcript: list = []
     if is_group:
@@ -160,6 +170,7 @@ async def _respond(message: Message, bot: Bot, user_text: str, sticker_boost: fl
         result = await llm.chat_reply(
             summary, history, user_text, user.first_name or "",
             gender=user_gender, extra_context=extra_context,
+            emoji_banned=emoji_banned, emoji_preferred=emoji_preferred,
         )
         if not synthetic and result["reply"] not in FALLBACK_REPLIES:
             try:
@@ -170,6 +181,12 @@ async def _respond(message: Message, bot: Bot, user_text: str, sticker_boost: fl
             except Exception:
                 log.exception("pairs learn failed")
     reply_text = result["reply"]
+    if emoji_banned:
+        # Learned-pair replies skip the LLM (and its post-filter), so
+        # the owner's ban is enforced here for them as well.
+        reply_text = emojis.strip_banned(reply_text, emoji_banned)
+        if not reply_text:
+            reply_text = random.choice(FALLBACK_REPLIES)
     mood = result["mood"]
     await db.append_message(chat_id, user.id, "bot", reply_text)
     if is_group:
@@ -265,8 +282,16 @@ async def _handle_text(message: Message, bot: Bot) -> None:
             and stickers.is_valid_mood(text)
         ):
             mood = text.strip().lower()
-            await stickers.save_sticker(rt.sticker.file_id, mood, user.id)
-            await message.answer("✅ Saved to the sticker pool — mood: <b>" + mood + "</b>")
+            status, saved_mood = await stickers.save_sticker(
+                rt.sticker.file_id, mood, user.id,
+                file_unique_id=rt.sticker.file_unique_id,
+            )
+            if status == "exists":
+                await message.answer(
+                    "This sticker is already saved ✅ — mood: <b>" + saved_mood + "</b>"
+                )
+            else:
+                await message.answer("✅ Saved to the sticker pool — mood: <b>" + mood + "</b>")
             return
         async with _chat_lock(message.chat.id):
             await _respond(message, bot, text)
@@ -309,10 +334,11 @@ async def _handle_sticker_pick(callback: CallbackQuery, bot: Bot) -> None:
     if callback.from_user is None or callback.from_user.id != settings.admin_id:
         await callback.answer()
         return
-    file_id = sticker_picker.resolve(token)
-    if file_id is None:
+    entry = sticker_picker.resolve_entry(token)
+    if entry is None:
         await callback.answer("This one expired — send the sticker again.")
         return
+    file_id = entry["file_id"]
     prompt = callback.message
     if choice == sticker_picker.CANCEL_CHOICE:
         if prompt is not None:
@@ -324,10 +350,19 @@ async def _handle_sticker_pick(callback: CallbackQuery, bot: Bot) -> None:
             )
         await callback.answer()
         return
-    await stickers.save_sticker(file_id, choice, callback.from_user.id)
+    status, saved_mood = await stickers.save_sticker(
+        file_id, choice, callback.from_user.id,
+        file_unique_id=entry.get("file_unique_id"),
+    )
     if prompt is not None:
+        if status == "exists":
+            final_text = "This sticker is already saved ✅ — mood: " + saved_mood.capitalize()
+        else:
+            final_text = (
+                "✅ Saved to " + choice.capitalize() + " " + sticker_picker.MOOD_EMOJI[choice]
+            )
         await bot.edit_message_text(
-            "✅ Saved to " + choice.capitalize() + " " + sticker_picker.MOOD_EMOJI[choice],
+            final_text,
             chat_id=prompt.chat.id,
             message_id=prompt.message_id,
             reply_markup=sticker_picker.cleared_markup(),
@@ -352,17 +387,40 @@ async def _handle_sticker(message: Message, bot: Bot) -> None:
     if message.chat.type == "private" and user.id == settings.admin_id:
         caption = (message.caption or "").strip().lower()
         if caption in MOODS:
-            await stickers.save_sticker(message.sticker.file_id, caption, user.id)
-            await message.answer("✅ Saved to the sticker pool — mood: <b>" + caption + "</b>")
+            status, saved_mood = await stickers.save_sticker(
+                message.sticker.file_id, caption, user.id,
+                file_unique_id=message.sticker.file_unique_id,
+            )
+            if status == "exists":
+                await message.answer(
+                    "This sticker is already saved ✅ — mood: <b>" + saved_mood + "</b>"
+                )
+            else:
+                await message.answer(
+                    "✅ Saved to the sticker pool — mood: <b>" + caption + "</b>"
+                )
         elif caption:
             await message.answer(
                 "That's not a mood 😅 Put one of these in the caption: " + ", ".join(MOODS)
             )
         else:
+            # Already in the pool? Say so at once — no mood picker for
+            # a sticker the owner has saved before.
+            existing = await stickers.find_sticker(
+                message.sticker.file_id, message.sticker.file_unique_id
+            )
+            if existing is not None:
+                await message.answer(
+                    "This sticker is already saved ✅ — mood: <b>"
+                    + existing["mood"] + "</b>"
+                )
+                return
             # No caption: offer the mood buttons instead of instructions.
             # Each sticker gets its own token + prompt, so the owner can
             # send a batch back-to-back and tap moods in any order.
-            token = sticker_picker.stash(message.sticker.file_id)
+            token = sticker_picker.stash(
+                message.sticker.file_id, message.sticker.file_unique_id
+            )
             await message.answer(
                 "Which mood should this sticker go to?",
                 reply_markup=sticker_picker.build_keyboard(token),
