@@ -1,4 +1,4 @@
-aiogram==3.13.1
+aiogram==3.32.0
 fastapi==0.115.6
 uvicorn[standard]==0.34.0
 asyncpg==0.30.0
