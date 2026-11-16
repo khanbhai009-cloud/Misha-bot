@@ -21,7 +21,7 @@ from contextlib import asynccontextmanager
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
-from aiogram.types import Update
+from aiogram.types import BotCommand, BotCommandScopeChat, BotCommandScopeDefault, Update
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
@@ -58,6 +58,60 @@ _polling_task = None
 _maintenance_task = None
 
 WORKER_COUNT = 8
+
+# Telegram command menu — the list that pops up from the "/" button next
+# to the chat typing box. Regular users only ever see USER_COMMANDS (the
+# default scope). The owner additionally sees the admin commands, via a
+# per-chat scope on his own private chat with the bot, so admin commands
+# stay invisible to everyone else. Keep these in sync with the routers
+# included above.
+USER_COMMANDS = [
+    BotCommand(command="start", description="Start Misha"),
+    BotCommand(command="bal", description="Check your balance"),
+    BotCommand(command="daily", description="Claim daily coins"),
+    BotCommand(command="rob", description="Rob a friend (reply)"),
+    BotCommand(command="kill", description="Hire a hit (reply)"),
+    BotCommand(command="protect", description="Buy protection"),
+    BotCommand(command="give", description="Give coins (reply)"),
+    BotCommand(command="toprich", description="Richest users"),
+    BotCommand(command="bomb", description="Start the Bomb game"),
+    BotCommand(command="truth", description="Truth question"),
+    BotCommand(command="dare", description="Dare challenge"),
+    BotCommand(command="joke", description="Random joke"),
+    BotCommand(command="own", description="Save a sticker as yours"),
+]
+
+ADMIN_COMMANDS = [
+    BotCommand(command="teach", description="Teach Misha a reply"),
+    BotCommand(command="emojiban", description="Ban emojis"),
+    BotCommand(command="emojiunban", description="Unban an emoji"),
+    BotCommand(command="emojiadd", description="Add preferred emojis"),
+    BotCommand(command="emojiremove", description="Remove a preferred emoji"),
+    BotCommand(command="emojilist", description="Show emoji lists"),
+]
+
+
+async def _register_commands(bot: Bot) -> None:
+    """Publish the "/" command menu at startup. Never fatal: the menu is
+    a convenience, not a dependency — if Telegram rejects the call or
+    the network hiccups, log it and let the bot start anyway."""
+    try:
+        await bot.set_my_commands(USER_COMMANDS, scope=BotCommandScopeDefault())
+        log.info("command menu registered (%d user commands)", len(USER_COMMANDS))
+    except Exception:
+        log.exception("set_my_commands (default scope) failed — continuing without it")
+    if settings.admin_id:
+        try:
+            await bot.set_my_commands(
+                USER_COMMANDS + ADMIN_COMMANDS,
+                scope=BotCommandScopeChat(chat_id=settings.admin_id),
+            )
+            log.info(
+                "admin command menu registered for chat %s (%d commands)",
+                settings.admin_id, len(USER_COMMANDS) + len(ADMIN_COMMANDS),
+            )
+        except Exception:
+            log.exception("set_my_commands (admin chat scope) failed — continuing without it")
 
 
 async def _worker() -> None:
@@ -103,6 +157,7 @@ async def lifespan(app: FastAPI):
     await games.refund_stale_games()
     await db.cleanup_old_messages()
     _maintenance_task = asyncio.create_task(_maintenance_loop())
+    await _register_commands(bot)
 
     if settings.polling:
         await bot.delete_webhook(drop_pending_updates=True)
